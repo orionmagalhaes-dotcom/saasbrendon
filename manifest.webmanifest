@@ -1,0 +1,21 @@
+{
+  "name": "Brancao (Lanches, hamburgueres e petiscos)",
+  "short_name": "Brancao",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f4f1e8",
+  "theme_color": "#1f2937",
+  "description": "Controle de restaurante/bar do Brancao com admin e garcom.",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "./icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}

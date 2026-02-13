@@ -1,0 +1,10 @@
+{
+  "name": "restobar-saas",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sistema de controle para restaurante/bar (PWA)",
+  "scripts": {
+    "dev": "node scripts/dev-server.js",
+    "build": "node scripts/build-static.js"
+  }
+}
