@@ -88,6 +88,17 @@ p {
   align-items: center;
 }
 
+.top-logo-subtle {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  opacity: 0.88;
+  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.35));
+  pointer-events: none;
+  user-select: none;
+  flex: 0 0 auto;
+}
+
 .brand-logo {
   display: none;
 }
@@ -414,9 +425,21 @@ th {
 
 .login-brand {
   display: flex;
-  gap: 0.75rem;
+  flex-direction: column;
+  gap: 0.38rem;
   align-items: center;
+  justify-content: center;
+  text-align: center;
   margin-bottom: 0.6rem;
+}
+
+.login-logo-subtle {
+  width: 116px;
+  height: auto;
+  opacity: 0.82;
+  filter: drop-shadow(0 6px 18px rgba(0, 0, 0, 0.35));
+  pointer-events: none;
+  user-select: none;
 }
 
 .logo-print {
@@ -628,6 +651,11 @@ th {
     font-size: 0.78rem;
   }
 
+  .top-logo-subtle {
+    width: 40px;
+    height: 40px;
+  }
+
   .app-shell .tabs {
     position: sticky;
     top: 4.45rem;
@@ -666,6 +694,11 @@ th {
   .card {
     padding: 0.74rem;
     border-radius: 14px;
+  }
+
+  .login-logo-subtle {
+    width: 98px;
+    opacity: 0.78;
   }
 
   .btn,

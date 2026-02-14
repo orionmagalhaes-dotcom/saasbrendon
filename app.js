@@ -729,8 +729,8 @@
     return `
       <div class="topbar">
         <div class="brand-head">
+          <img class="top-logo-subtle" src="./brand-login.png" alt="Logo" />
           <div>
-          <h2>${esc(ESTABLISHMENT_NAME)}</h2>
           <p class="user">${esc(roleLabel(user.role))}: ${esc(user.name)} | Caixa: ${esc(state.cash.id)}</p>
           <p class="note"><span class="status-dot ${statusClass}"></span>Sincronizacao: ${esc(uiState.supabaseStatus)}${esc(statusMsg)}</p>
           </div>
@@ -761,7 +761,7 @@
       <div class="login-wrap">
         <div class="card login-card">
           <div class="login-brand">
-            <h2>${esc(ESTABLISHMENT_NAME)}</h2>
+            <img class="login-logo-subtle" src="./brand-login.png" alt="Logo ${esc(ESTABLISHMENT_NAME)}" />
           </div>
           <p class="note">Acesso inicial: admin/admin, user/user e cook/cook.</p>
           <form id="login-form" class="form" autocomplete="off">
