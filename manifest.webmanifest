@@ -3,8 +3,8 @@
   "short_name": "Brancao",
   "start_url": "./index.html",
   "display": "standalone",
-  "background_color": "#f4f1e8",
-  "theme_color": "#1f2937",
+  "background_color": "#000000",
+  "theme_color": "#000000",
   "description": "Controle de restaurante/bar do Brancao com admin e garcom.",
   "icons": [
     {

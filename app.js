@@ -4,9 +4,9 @@
 (() => {
   const STORAGE_KEY = "restobar_control_v1";
   const SESSION_KEY = "restobar_local_session_user";
-  const ESTABLISHMENT_NAME = "Brancao (Lanches, hamburgueres e petiscos)";
-  const BRAND_LOGO = "./brand-logo.png";
-  const CATEGORIES = ["Bar", "Cozinha", "Espetinhos", "Avulsos"];
+  const ESTABLISHMENT_NAME = "Brancao";
+  const CATEGORIES = ["Bar", "Cozinha", "Espetinhos", "Avulso", "Ofertas"];
+  const BAR_SUBCATEGORIES = ["Doses/Copo", "Geral"];
   const KITCHEN_STATUSES = [
     { value: "fila", label: "Fila de espera" },
     { value: "cozinhando", label: "Cozinhando" },
@@ -36,15 +36,19 @@
 
   const app = document.getElementById("app");
   const uiState = {
-    adminTab: "dashboard",
-    waiterTab: "home",
+    adminTab: "monitor",
+    waiterTab: "abrir",
     cookTab: "ativos",
     finalizeOpenByComanda: {},
+    waiterCollapsedByComanda: {},
+    waiterActiveComandaId: null,
     deferredPrompt: null,
     monitorWaiterId: "all",
     comandaDetailsId: null,
     comandaDetailsSource: "closed",
     waiterComandaSearch: "",
+    waiterCatalogSearch: "",
+    waiterCatalogCategory: "all",
     adminComandaSearch: "",
     cookSearch: "",
     supabaseStatus: "desconectado",
@@ -98,18 +102,23 @@
 
   function createSeedProducts() {
     const seed = [
-      { name: "Cerveja Long Neck", category: "Bar", price: randomPrice(9, 15), stock: randomInt(20, 80), prepTime: 0, cost: randomPrice(5, 8) },
-      { name: "Caipirinha", category: "Bar", price: randomPrice(14, 22), stock: randomInt(20, 50), prepTime: 3, cost: randomPrice(6, 10) },
-      { name: "Refrigerante Lata", category: "Bar", price: randomPrice(5, 8), stock: randomInt(40, 120), prepTime: 0, cost: randomPrice(2.8, 4.5) },
-      { name: "Batata Frita", category: "Cozinha", price: randomPrice(22, 34), stock: randomInt(15, 50), prepTime: randomInt(12, 18), cost: randomPrice(8, 14) },
-      { name: "Tilapia Empanada", category: "Cozinha", price: randomPrice(35, 48), stock: randomInt(10, 30), prepTime: randomInt(18, 28), cost: randomPrice(15, 22) },
-      { name: "Picanha na Chapa", category: "Cozinha", price: randomPrice(59, 78), stock: randomInt(8, 24), prepTime: randomInt(22, 32), cost: randomPrice(30, 44) },
-      { name: "Espetinho de Frango", category: "Espetinhos", price: randomPrice(9, 14), stock: randomInt(30, 120), prepTime: randomInt(7, 12), cost: randomPrice(4.2, 6.7) },
-      { name: "Espetinho de Carne", category: "Espetinhos", price: randomPrice(11, 17), stock: randomInt(30, 100), prepTime: randomInt(7, 12), cost: randomPrice(5.8, 8.8) },
-      { name: "Pao de Alho", category: "Espetinhos", price: randomPrice(8, 12), stock: randomInt(35, 110), prepTime: randomInt(4, 8), cost: randomPrice(3, 5) },
-      { name: "Molho Especial", category: "Avulsos", price: randomPrice(3, 6), stock: randomInt(50, 200), prepTime: 0, cost: randomPrice(0.8, 2.1) },
-      { name: "Queijo Coalho", category: "Avulsos", price: randomPrice(6, 11), stock: randomInt(30, 100), prepTime: randomInt(3, 6), cost: randomPrice(2.7, 4.8) },
-      { name: "Farofa da Casa", category: "Avulsos", price: randomPrice(4, 8), stock: randomInt(30, 90), prepTime: 0, cost: randomPrice(1.2, 2.9) }
+      { name: "Agua Mineral", category: "Bar", subcategory: "Geral", price: randomPrice(3, 7), stock: randomInt(30, 120), prepTime: 0, cost: randomPrice(1.4, 3), available: true, requiresKitchen: false },
+      { name: "Cachaca Dose", category: "Bar", subcategory: "Doses/Copo", price: randomPrice(6, 12), stock: randomInt(30, 100), prepTime: 0, cost: randomPrice(2.2, 5.2), available: true, requiresKitchen: false },
+      { name: "Cerveja Long Neck", category: "Bar", subcategory: "Geral", price: randomPrice(9, 15), stock: randomInt(20, 80), prepTime: 0, cost: randomPrice(5, 8), available: true, requiresKitchen: false },
+      { name: "Refrigerante Lata", category: "Bar", subcategory: "Geral", price: randomPrice(5, 8), stock: randomInt(40, 120), prepTime: 0, cost: randomPrice(2.8, 4.5), available: true, requiresKitchen: false },
+      { name: "Gelo (Balde)", category: "Bar", subcategory: "Geral", price: randomPrice(4, 9), stock: randomInt(30, 120), prepTime: 0, cost: randomPrice(1.3, 3.2), available: true, requiresKitchen: false },
+      { name: "Pastel da Casa", category: "Cozinha", price: randomPrice(16, 26), stock: randomInt(20, 70), prepTime: randomInt(10, 16), cost: randomPrice(6, 11), available: true, requiresKitchen: true },
+      { name: "Baiao", category: "Cozinha", price: randomPrice(24, 38), stock: randomInt(10, 35), prepTime: randomInt(18, 26), cost: randomPrice(11, 19), available: true, requiresKitchen: true },
+      { name: "Hamburguer Artesanal", category: "Cozinha", price: randomPrice(22, 36), stock: randomInt(12, 40), prepTime: randomInt(14, 24), cost: randomPrice(9, 16), available: true, requiresKitchen: true },
+      { name: "Espetinho de Frango", category: "Espetinhos", price: randomPrice(9, 14), stock: randomInt(30, 120), prepTime: randomInt(7, 12), cost: randomPrice(4.2, 6.7), available: true, requiresKitchen: false },
+      { name: "Espetinho de Carne", category: "Espetinhos", price: randomPrice(11, 17), stock: randomInt(30, 100), prepTime: randomInt(7, 12), cost: randomPrice(5.8, 8.8), available: true, requiresKitchen: false },
+      { name: "Queijo Coalho no Espeto", category: "Espetinhos", price: randomPrice(8, 12), stock: randomInt(35, 110), prepTime: randomInt(4, 8), cost: randomPrice(3, 5), available: true, requiresKitchen: false },
+      { name: "Cigarro", category: "Avulso", price: randomPrice(10, 20), stock: randomInt(20, 80), prepTime: 0, cost: randomPrice(7, 14), available: true, requiresKitchen: false },
+      { name: "Trident", category: "Avulso", price: randomPrice(3, 6), stock: randomInt(60, 180), prepTime: 0, cost: randomPrice(1.2, 2.8), available: true, requiresKitchen: false },
+      { name: "Bombom", category: "Avulso", price: randomPrice(2.5, 6), stock: randomInt(50, 160), prepTime: 0, cost: randomPrice(0.8, 2.5), available: true, requiresKitchen: false },
+      { name: "Salgadinho", category: "Avulso", price: randomPrice(4, 9), stock: randomInt(50, 160), prepTime: 0, cost: randomPrice(1.6, 4.2), available: true, requiresKitchen: false },
+      { name: "Combo Executivo", category: "Ofertas", price: randomPrice(34, 54), stock: randomInt(8, 30), prepTime: randomInt(16, 26), cost: randomPrice(15, 24), available: true, requiresKitchen: true },
+      { name: "Oferta Balde + Gelo", category: "Ofertas", price: randomPrice(24, 38), stock: randomInt(10, 36), prepTime: 0, cost: randomPrice(12, 20), available: true, requiresKitchen: false }
     ];
 
     return seed.map((p, idx) => ({ id: idx + 1, ...p }));
@@ -163,6 +172,119 @@
     });
   }
 
+  function ensureSystemUsers(targetState) {
+    if (!targetState.users.find((u) => u.role === "admin" && u.login === "admin")) {
+      targetState.users.push({ id: targetState.seq.user++, role: "admin", name: "Administrador", functionName: "Administrador", login: "admin", password: "admin", active: true });
+    }
+    if (!targetState.users.find((u) => u.role === "waiter" && u.login === "user")) {
+      targetState.users.push({ id: targetState.seq.user++, role: "waiter", name: "Garcom Teste", functionName: "Garcom", login: "user", password: "user", active: true });
+    }
+    if (!targetState.users.find((u) => u.role === "cook" && u.login === "cook")) {
+      targetState.users.push({ id: targetState.seq.user++, role: "cook", name: "Cozinheiro Teste", functionName: "Cozinheiro", login: "cook", password: "cook", active: true });
+    }
+  }
+
+  function normalizeCategoryName(category) {
+    const raw = String(category || "").trim();
+    if (!raw) return "Avulso";
+    const flat = raw
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+    if (flat === "bar" || flat === "bebida" || flat === "bebidas") return "Bar";
+    if (flat === "cozinha") return "Cozinha";
+    if (flat === "espetinho" || flat === "espetinhos" || flat === "espertinho" || flat === "espertinhos") return "Espetinhos";
+    if (flat === "avulso" || flat === "avulsos" || flat === "variedades" || flat === "variados") return "Avulso";
+    if (flat === "oferta" || flat === "ofertas") return "Ofertas";
+    return "Avulso";
+  }
+
+  function normalizeProductCategory(category) {
+    return normalizeCategoryName(category);
+  }
+
+  function normalizeProductSubcategory(product) {
+    if (product.category !== "Bar") return "";
+    const raw = String(product.subcategory || "").trim();
+    const flat = raw
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+    if (flat === "doses" || flat === "dose" || flat === "doses/copo" || flat === "dose/copo" || flat === "copo") return "Doses/Copo";
+    return BAR_SUBCATEGORIES.includes(raw) ? raw : "Geral";
+  }
+
+  function normalizeComandaItem(item, fallbackId = 0) {
+    const category = normalizeCategoryName(item.category);
+    const requiresKitchen = category === "Cozinha" ? true : category === "Ofertas" ? Boolean(item.requiresKitchen) : false;
+    return {
+      ...item,
+      id: item.id || `IT-NORM-${fallbackId}`,
+      category,
+      requiresKitchen,
+      needsKitchen: item.needsKitchen !== undefined ? Boolean(item.needsKitchen) : requiresKitchen,
+      kitchenAlertUnread: Boolean(item.kitchenAlertUnread)
+    };
+  }
+
+  function normalizeComandaRecord(comanda, fallbackId = 0) {
+    const items = Array.isArray(comanda.items) ? comanda.items.map((item, idx) => normalizeComandaItem(item || {}, idx + 1)) : [];
+    const hasKitchenUnread = items.some((item) => itemNeedsKitchen(item) && item.kitchenAlertUnread && !item.canceled);
+    return {
+      ...comanda,
+      id: comanda.id || `CMD-NORM-${fallbackId + 1}`,
+      table: comanda.table || "-",
+      items,
+      kitchenAlertUnread: hasKitchenUnread
+    };
+  }
+
+  function normalizeProductRecord(product, fallbackId = 0) {
+    const normalizedCategory = normalizeProductCategory(product.category);
+    const normalized = {
+      ...product,
+      id: Number(product.id || fallbackId),
+      category: normalizedCategory
+    };
+    normalized.subcategory = normalizeProductSubcategory(normalized);
+    normalized.available = product.available !== false;
+    normalized.requiresKitchen =
+      normalizedCategory === "Cozinha" ? true : normalizedCategory === "Ofertas" ? Boolean(product.requiresKitchen) : false;
+    return normalized;
+  }
+
+  function normalizeStateShape(source) {
+    const parsed = source && typeof source === "object" ? source : {};
+    const fallback = initialState();
+    const normalized = {
+      ...fallback,
+      ...parsed,
+      users: Array.isArray(parsed.users) ? parsed.users : fallback.users,
+      products: Array.isArray(parsed.products)
+        ? parsed.products.map((p, idx) => normalizeProductRecord(p || {}, idx + 1))
+        : fallback.products.map((p) => normalizeProductRecord(p || {}, p.id)),
+      openComandas: Array.isArray(parsed.openComandas) ? parsed.openComandas.map((c, idx) => normalizeComandaRecord(c || {}, idx)) : [],
+      closedComandas: Array.isArray(parsed.closedComandas) ? parsed.closedComandas.map((c, idx) => normalizeComandaRecord(c || {}, idx)) : [],
+      cookHistory: Array.isArray(parsed.cookHistory) ? parsed.cookHistory : [],
+      payables: Array.isArray(parsed.payables) ? parsed.payables : [],
+      auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog : [],
+      history90: Array.isArray(parsed.history90)
+        ? parsed.history90.map((entry) => ({
+            ...entry,
+            commandas: Array.isArray(entry.commandas) ? entry.commandas.map((c, idx) => normalizeComandaRecord(c || {}, idx)) : []
+          }))
+        : [],
+      seq: { ...fallback.seq, ...(parsed.seq || {}) },
+      meta: { ...fallback.meta, ...(parsed.meta || {}) },
+      cash: { ...fallback.cash, ...(parsed.cash || {}) },
+      session: { userId: parsed.session?.userId || null }
+    };
+
+    ensureSystemUsers(normalized);
+    pruneHistory(normalized);
+    return normalized;
+  }
+
   function loadState() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) {
@@ -172,35 +294,7 @@
     }
 
     try {
-      const parsed = JSON.parse(raw);
-      const fallback = initialState();
-      const merged = {
-        ...fallback,
-        ...parsed,
-        users: parsed.users || fallback.users,
-        products: parsed.products || fallback.products,
-        openComandas: parsed.openComandas || [],
-        closedComandas: parsed.closedComandas || [],
-        cookHistory: parsed.cookHistory || [],
-        payables: parsed.payables || [],
-        auditLog: parsed.auditLog || [],
-        history90: parsed.history90 || [],
-        seq: { ...fallback.seq, ...(parsed.seq || {}) },
-        meta: { ...fallback.meta, ...(parsed.meta || {}) },
-        session: { userId: parsed.session?.userId || null }
-      };
-
-      if (!merged.users.find((u) => u.role === "admin" && u.login === "admin")) {
-        merged.users.push({ id: merged.seq.user++, role: "admin", name: "Administrador", functionName: "Administrador", login: "admin", password: "admin", active: true });
-      }
-      if (!merged.users.find((u) => u.role === "waiter" && u.login === "user")) {
-        merged.users.push({ id: merged.seq.user++, role: "waiter", name: "Garcom Teste", functionName: "Garcom", login: "user", password: "user", active: true });
-      }
-      if (!merged.users.find((u) => u.role === "cook" && u.login === "cook")) {
-        merged.users.push({ id: merged.seq.user++, role: "cook", name: "Cozinheiro Teste", functionName: "Cozinheiro", login: "cook", password: "cook", active: true });
-      }
-
-      pruneHistory(merged);
+      const merged = normalizeStateShape(JSON.parse(raw));
       localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
       return merged;
     } catch (_err) {
@@ -247,6 +341,14 @@
     syncTimer: null,
     syncInFlight: false
   };
+
+  function adoptIncomingState(source) {
+    const currentSession = sessionUserId;
+    state = normalizeStateShape(source);
+    state.session = { userId: null };
+    sessionUserId = currentSession;
+    persistSessionUserId(sessionUserId);
+  }
 
   function saveState(options = {}) {
     const touchMeta = options.touchMeta !== false;
@@ -335,31 +437,7 @@
       const localUpdated = new Date(state.meta?.updatedAt || 0).getTime();
       const remoteUpdated = new Date(data.payload?.meta?.updatedAt || data.updated_at || 0).getTime();
       if (Number.isFinite(remoteUpdated) && remoteUpdated > localUpdated) {
-        const currentSession = sessionUserId;
-        const fallback = initialState();
-        state = data.payload;
-        state.users = state.users || fallback.users;
-        state.products = state.products || fallback.products;
-        state.openComandas = state.openComandas || [];
-        state.closedComandas = state.closedComandas || [];
-        state.cookHistory = state.cookHistory || [];
-        state.payables = state.payables || [];
-        state.auditLog = state.auditLog || [];
-        state.history90 = state.history90 || [];
-        state.seq = { ...fallback.seq, ...(state.seq || {}) };
-        state.meta = { ...fallback.meta, ...(state.meta || {}) };
-        state.session = { userId: null };
-        sessionUserId = currentSession;
-        persistSessionUserId(sessionUserId);
-        if (!state.users.find((u) => u.role === "admin" && u.login === "admin")) {
-          state.users.push({ id: state.seq.user++, role: "admin", name: "Administrador", functionName: "Administrador", login: "admin", password: "admin", active: true });
-        }
-        if (!state.users.find((u) => u.role === "waiter" && u.login === "user")) {
-          state.users.push({ id: state.seq.user++, role: "waiter", name: "Garcom Teste", functionName: "Garcom", login: "user", password: "user", active: true });
-        }
-        if (!state.users.find((u) => u.role === "cook" && u.login === "cook")) {
-          state.users.push({ id: state.seq.user++, role: "cook", name: "Cozinheiro Teste", functionName: "Cozinheiro", login: "cook", password: "cook", active: true });
-        }
+        adoptIncomingState(data.payload);
         state.meta.lastCloudSyncAt = isoNow();
         saveState({ skipCloud: true, touchMeta: false });
         render();
@@ -486,11 +564,28 @@
     }, 0);
   }
 
+  function productIsAvailable(product) {
+    return Boolean(product) && product.available !== false && Number(product.stock || 0) > 0;
+  }
+
+  function productNeedsKitchen(product) {
+    if (!product) return false;
+    if (product.category === "Cozinha") return true;
+    return product.category === "Ofertas" && Boolean(product.requiresKitchen);
+  }
+
+  function itemNeedsKitchen(item) {
+    if (!item) return false;
+    if (item.needsKitchen !== undefined) return Boolean(item.needsKitchen);
+    if (item.category === "Cozinha") return true;
+    return item.category === "Ofertas" && Boolean(item.requiresKitchen);
+  }
+
   function listPendingKitchenItems() {
     const rows = [];
     for (const comanda of state.openComandas) {
       for (const item of comanda.items || []) {
-        if (item.category === "Cozinha" && !item.canceled && !item.delivered) {
+        if (itemNeedsKitchen(item) && !item.canceled && !item.delivered) {
           rows.push({ comanda, item, remainingMs: kitchenRemainingMs(item) });
         }
       }
@@ -529,6 +624,33 @@
     if (status === "em_falta") return "warn";
     if (status === "entregue") return "ok";
     return "";
+  }
+
+  function kitchenIndicatorMeta(comanda) {
+    const unresolved = (comanda.items || []).filter((item) => itemNeedsKitchen(item) && item.kitchenAlertUnread);
+    if (!unresolved.length) return null;
+
+    const statuses = unresolved.map((item) => (item.canceled ? "cancelado" : item.kitchenStatus || "fila"));
+    if (statuses.some((status) => status === "cancelado" || status === "em_falta")) {
+      return { tone: "danger", label: "Cozinha: problema (em falta/cancelado)", count: unresolved.length };
+    }
+    if (statuses.some((status) => status === "cozinhando")) {
+      return { tone: "cooking", label: "Cozinha: em preparo", count: unresolved.length };
+    }
+    if (statuses.some((status) => status === "fila")) {
+      return { tone: "waiting", label: "Cozinha: em espera", count: unresolved.length };
+    }
+    if (statuses.some((status) => status === "entregue")) {
+      return { tone: "done", label: "Cozinha: pronto para retirada", count: unresolved.length };
+    }
+    return { tone: "waiting", label: "Cozinha: em espera", count: unresolved.length };
+  }
+
+  function renderKitchenIndicatorBadge(comanda, compact = false) {
+    const meta = kitchenIndicatorMeta(comanda);
+    if (!meta) return "";
+    const amount = meta.count > 1 ? `${meta.count} atualizacoes` : "1 atualizacao";
+    return `<span class="kitchen-indicator ${meta.tone} ${compact ? "compact" : ""}" title="${esc(meta.label)}">${esc(meta.label)}${compact ? "" : ` | ${amount}`}</span>`;
   }
 
   function generatePixCode() {
@@ -607,11 +729,10 @@
     return `
       <div class="topbar">
         <div class="brand-head">
-          <img class="brand-logo" src="${BRAND_LOGO}" alt="Logo ${esc(ESTABLISHMENT_NAME)}" />
           <div>
           <h2>${esc(ESTABLISHMENT_NAME)}</h2>
-          <p class="user">Usuario: ${esc(user.name)} (${esc(roleLabel(user.role))}) | Caixa atual: ${esc(state.cash.id)}</p>
-          <p class="note"><span class="status-dot ${statusClass}"></span>Supabase: ${esc(uiState.supabaseStatus)}${esc(statusMsg)}</p>
+          <p class="user">${esc(roleLabel(user.role))}: ${esc(user.name)} | Caixa: ${esc(state.cash.id)}</p>
+          <p class="note"><span class="status-dot ${statusClass}"></span>Sincronizacao: ${esc(uiState.supabaseStatus)}${esc(statusMsg)}</p>
           </div>
         </div>
         <div class="actions">
@@ -623,7 +744,7 @@
 
   function renderTabs(role, tabs, selected) {
     return `
-      <div class="tabs">
+      <div class="tabs tabs-${role}">
         ${tabs
           .map(
             (tab) => `
@@ -640,10 +761,9 @@
       <div class="login-wrap">
         <div class="card login-card">
           <div class="login-brand">
-            <img class="brand-logo" src="${BRAND_LOGO}" alt="Logo ${esc(ESTABLISHMENT_NAME)}" />
             <h2>${esc(ESTABLISHMENT_NAME)}</h2>
           </div>
-          <p class="note">Acesso inicial: admin/admin, user/user e cook/cook</p>
+          <p class="note">Acesso inicial: admin/admin, user/user e cook/cook.</p>
           <form id="login-form" class="form" autocomplete="off">
             <div class="field">
               <label>Login</label>
@@ -687,15 +807,86 @@
     `;
   }
 
+  function categoryDisplay(category, subcategory = "") {
+    if (category === "Bar") {
+      return subcategory ? `Bar (Bebidas) / ${subcategory}` : "Bar (Bebidas)";
+    }
+    if (category === "Avulso") {
+      return "Avulso (Variedades)";
+    }
+    if (category === "Ofertas") {
+      return "Ofertas";
+    }
+    return category;
+  }
+
+  function renderProductsTableRows(products) {
+    return products
+      .map(
+        (p) => {
+          const offerTag = p.category === "Ofertas" ? `<span class="tag">${p.requiresKitchen ? "Oferta com cozinha" : "Oferta pronta entrega"}</span>` : "";
+          const availabilityTag = p.available === false ? `<span class="tag" style="border-color:#8b2f3b;background:#38181c;color:#ff8e99;">Indisponivel</span>` : `<span class="tag" style="border-color:#2c7a49;background:#122b1b;color:#88ebb0;">Disponivel</span>`;
+          const stockText = Number(p.stock || 0) > 0 ? Number(p.stock) : "0";
+          return `
+          <tr>
+            <td data-label="Produto"><div>${esc(p.name)}</div><div class="actions" style="margin-top:0.22rem;">${availabilityTag}${offerTag}</div></td>
+            <td data-label="Preco">${money(p.price)}</td>
+            <td data-label="Estoque">${stockText}</td>
+            <td data-label="Preparo (min)">${Number(p.prepTime || 0)}</td>
+            <td data-label="Custo">${money(p.cost || 0)}</td>
+            <td data-label="Acoes">
+              <div class="actions">
+                <button class="btn secondary" data-action="edit-product" data-id="${p.id}">Editar</button>
+                <button class="btn secondary" data-action="toggle-product-availability" data-id="${p.id}">${p.available === false ? "Disponibilizar" : "Indisponibilizar"}</button>
+                <button class="btn danger" data-action="delete-product" data-id="${p.id}">Apagar</button>
+              </div>
+            </td>
+          </tr>
+        `;
+        }
+      )
+      .join("");
+  }
+
   function renderProductsByCategory(category) {
     const products = state.products.filter((p) => p.category === category);
     if (!products.length) {
       return `<div class="empty">Sem produtos cadastrados em ${esc(category)}.</div>`;
     }
 
+    if (category === "Bar") {
+      const doses = products.filter((p) => (p.subcategory || "Geral") === "Doses/Copo");
+      const gerais = products.filter((p) => (p.subcategory || "Geral") !== "Doses/Copo");
+      return `
+        <details class="compact-details" open>
+          <summary><b>Bar (Bebidas)</b> | Subcategoria: Doses/Copo</summary>
+          <div style="margin-top:0.55rem;">
+            <h4 style="margin:0;">Doses/Copo</h4>
+            ${
+              doses.length
+                ? `<div class="table-wrap" style="margin-top:0.45rem;"><table class="responsive-stack products-table"><thead><tr><th>Produto</th><th>Preco</th><th>Estoque</th><th>Preparo (min)</th><th>Custo</th><th>Acoes</th></tr></thead><tbody>${renderProductsTableRows(
+                    doses
+                  )}</tbody></table></div>`
+                : `<div class="empty" style="margin-top:0.45rem;">Nenhum item em Doses/Copo.</div>`
+            }
+          </div>
+          <div style="margin-top:0.7rem;">
+            <h4 style="margin:0;">Outros itens de bar</h4>
+            ${
+              gerais.length
+                ? `<div class="table-wrap" style="margin-top:0.45rem;"><table class="responsive-stack products-table"><thead><tr><th>Produto</th><th>Preco</th><th>Estoque</th><th>Preparo (min)</th><th>Custo</th><th>Acoes</th></tr></thead><tbody>${renderProductsTableRows(
+                    gerais
+                  )}</tbody></table></div>`
+                : `<div class="empty" style="margin-top:0.45rem;">Nenhum item fora de Doses/Copo.</div>`
+            }
+          </div>
+        </details>
+      `;
+    }
+
     return `
       <div class="table-wrap">
-        <table>
+        <table class="responsive-stack products-table">
           <thead>
             <tr>
               <th>Produto</th>
@@ -706,27 +897,7 @@
               <th>Acoes</th>
             </tr>
           </thead>
-          <tbody>
-            ${products
-              .map(
-                (p) => `
-              <tr>
-                <td>${esc(p.name)}</td>
-                <td>${money(p.price)}</td>
-                <td>${Number(p.stock)}</td>
-                <td>${Number(p.prepTime || 0)}</td>
-                <td>${money(p.cost || 0)}</td>
-                <td>
-                  <div class="actions">
-                    <button class="btn secondary" data-action="edit-product" data-id="${p.id}">Editar</button>
-                    <button class="btn danger" data-action="delete-product" data-id="${p.id}">Apagar</button>
-                  </div>
-                </td>
-              </tr>
-            `
-              )
-              .join("")}
-          </tbody>
+          <tbody>${renderProductsTableRows(products)}</tbody>
         </table>
       </div>
     `;
@@ -747,6 +918,19 @@
               <select name="category" required>
                 ${CATEGORIES.map((c) => `<option value="${c}">${c}</option>`).join("")}
               </select>
+            </div>
+            <div class="field" data-role="admin-bar-submenu">
+              <label>Subcategoria de Bebidas (Bar)</label>
+              <select name="subcategory">
+                ${BAR_SUBCATEGORIES.map((s) => `<option value="${s}">${s}</option>`).join("")}
+              </select>
+            </div>
+            <div class="field" data-role="admin-offer-kitchen" style="display:none;">
+              <label><input type="checkbox" name="offerNeedsKitchen" /> Oferta depende da cozinha</label>
+              <div class="note">Ative para seguir fila e status da cozinha.</div>
+            </div>
+            <div class="field">
+              <label><input type="checkbox" name="available" checked /> Produto disponivel no cardapio</label>
             </div>
             <div class="grid cols-2">
               <div class="field">
@@ -776,9 +960,11 @@
         </div>
         <div class="card">
           <h3>Categorias</h3>
-          <p class="note">Administrador pode adicionar, apagar e alterar preco/produto por categoria.</p>
+          <p class="note">Classificacao sugerida: Bar, Cozinha, Espetinhos, Avulso e Ofertas (combos e promocionais).</p>
           <div class="actions" style="margin-top:0.75rem;">
             ${CATEGORIES.map((c) => `<span class="tag">${esc(c)}</span>`).join("")}
+            <span class="tag">Bar / Doses/Copo</span>
+            <span class="tag">Ofertas / depende da cozinha</span>
           </div>
         </div>
       </div>
@@ -810,7 +996,7 @@
                     (p) => `
                     <tr>
                       <td>${esc(p.name)}</td>
-                      <td>${esc(p.category)}</td>
+                      <td>${esc(categoryDisplay(p.category, p.subcategory || ""))}</td>
                       <td>${Number(p.stock)}</td>
                       <td><input type="number" min="0" name="stock-${p.id}" value="${Number(p.stock)}" /></td>
                     </tr>
@@ -884,9 +1070,10 @@
         <div class="card">
           <h3>Menu A Pagar (Fiado)</h3>
           ${pending.length
-            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table><thead><tr><th>Comanda</th><th>Cliente</th><th>Total</th><th>Criado em</th><th>Acoes</th></tr></thead><tbody>${pending
+            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="responsive-stack payables-table"><thead><tr><th>Comanda</th><th>Cliente</th><th>Total</th><th>Criado em</th><th>Acoes</th></tr></thead><tbody>${pending
                 .map(
-                  (p) => `<tr><td>${esc(p.comandaId)}</td><td>${esc(p.customerName)}</td><td>${money(p.total)}</td><td>${formatDateTime(p.createdAt)}</td><td><button class="btn ok" data-action="receive-payable" data-id="${p.id}">Marcar Pago</button></td></tr>`
+                  (p) =>
+                    `<tr><td data-label="Comanda">${esc(p.comandaId)}</td><td data-label="Cliente">${esc(p.customerName)}</td><td data-label="Total">${money(p.total)}</td><td data-label="Criado em">${formatDateTime(p.createdAt)}</td><td data-label="Acoes"><button class="btn ok" data-action="receive-payable" data-id="${p.id}">Marcar Pago</button></td></tr>`
                 )
                 .join("")}</tbody></table></div>`
             : `<div class="empty" style="margin-top:0.75rem;">Nenhum fiado pendente.</div>`}
@@ -894,9 +1081,10 @@
         <div class="card">
           <h3>Fiados Pagos</h3>
           ${paid.length
-            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table><thead><tr><th>Comanda</th><th>Cliente</th><th>Total</th><th>Pago em</th><th>Metodo</th></tr></thead><tbody>${paid
+            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="responsive-stack payables-table"><thead><tr><th>Comanda</th><th>Cliente</th><th>Total</th><th>Pago em</th><th>Metodo</th></tr></thead><tbody>${paid
                 .map(
-                  (p) => `<tr><td>${esc(p.comandaId)}</td><td>${esc(p.customerName)}</td><td>${money(p.total)}</td><td>${formatDateTime(p.paidAt)}</td><td>${esc(paymentLabel(p.paidMethod || ""))}</td></tr>`
+                  (p) =>
+                    `<tr><td data-label="Comanda">${esc(p.comandaId)}</td><td data-label="Cliente">${esc(p.customerName)}</td><td data-label="Total">${money(p.total)}</td><td data-label="Pago em">${formatDateTime(p.paidAt)}</td><td data-label="Metodo">${esc(paymentLabel(p.paidMethod || ""))}</td></tr>`
                 )
                 .join("")}</tbody></table></div>`
             : `<div class="empty" style="margin-top:0.75rem;">Sem registros pagos.</div>`}
@@ -994,7 +1182,7 @@
                   ${state.products
                     .map(
                       (p) =>
-                        `<tr><td>${esc(p.name)}</td><td>${esc(p.category)}</td><td>${money(p.price)}</td><td><input name="price-${p.id}" value="${Number(p.price || 0).toFixed(2)}" /></td><td>${Number(p.stock || 0)}</td><td><input type="number" min="0" name="stock-${p.id}" value="${Number(p.stock || 0)}" /></td><td>${money(p.cost || 0)}</td><td><input name="cost-${p.id}" value="${Number(p.cost || 0).toFixed(2)}" /></td></tr>`
+                        `<tr><td>${esc(p.name)}</td><td>${esc(categoryDisplay(p.category, p.subcategory || ""))}</td><td>${money(p.price)}</td><td><input name="price-${p.id}" value="${Number(p.price || 0).toFixed(2)}" /></td><td>${Number(p.stock || 0)}</td><td><input type="number" min="0" name="stock-${p.id}" value="${Number(p.stock || 0)}" /></td><td>${money(p.cost || 0)}</td><td><input name="cost-${p.id}" value="${Number(p.cost || 0).toFixed(2)}" /></td></tr>`
                     )
                     .join("")}
                 </tbody>
@@ -1070,8 +1258,8 @@
       .map(
         (item) =>
           `<tr><td>${esc(item.name)}</td><td>${item.qty}</td><td>${money(item.priceAtSale)}</td><td>${
-            item.category === "Cozinha" && !item.canceled ? esc(kitchenStatusLabel(item.kitchenStatus || "fila")) : item.canceled ? "Cancelado" : item.delivered ? "Entregue" : "Pendente"
-          }</td><td>${esc(item.waiterNote || "-")}</td></tr>`
+            itemNeedsKitchen(item) && !item.canceled ? esc(kitchenStatusLabel(item.kitchenStatus || "fila")) : item.canceled ? "Cancelado" : item.delivered ? "Entregue" : "Pendente"
+          }</td><td>${esc(item.waiterNote || "-")}${item.deliveryRequested ? ` | Entrega: ${esc(item.deliveryRecipient || "-")} @ ${esc(item.deliveryLocation || "-")}` : ""}</td></tr>`
       )
       .join("");
     const events = (comanda.events || [])
@@ -1105,6 +1293,61 @@
     `;
   }
 
+  function comandaUpdatedAt(comanda) {
+    const lastEventAt = (comanda.events || []).length ? (comanda.events || []).slice(-1)[0]?.ts : null;
+    return comanda.closedAt || lastEventAt || comanda.createdAt;
+  }
+
+  function renderComandaRecordsCompact(commandas, options = {}) {
+    const limit = Number(options.limit || 60);
+    const title = options.title || "Registros por Comanda";
+    if (!commandas.length) {
+      return `
+        <div class="card">
+          <h3>${esc(title)}</h3>
+          <div class="empty" style="margin-top:0.75rem;">Sem registros de comandas para o filtro atual.</div>
+        </div>
+      `;
+    }
+
+    const ordered = [...commandas]
+      .sort((a, b) => new Date(comandaUpdatedAt(b) || 0) - new Date(comandaUpdatedAt(a) || 0))
+      .slice(0, limit);
+    return `
+      <div class="card">
+        <h3>${esc(title)}</h3>
+        <p class="note">Cada comanda fica minimizada para evitar poluicao visual.</p>
+        ${ordered
+          .map((comanda) => {
+            const validItems = (comanda.items || []).filter((i) => !i.canceled).length;
+            const events = (comanda.events || []).slice(-20).reverse();
+            return `
+              <details class="compact-details" style="margin-top:0.65rem;">
+                <summary>
+                  <b>${esc(comanda.id)}</b> | ${esc(comanda.status || "aberta")} | Mesa: ${esc(comanda.table || "-")} | Cliente: ${esc(comanda.customer || "-")} | Itens: ${validItems} | Total: ${money(comandaTotal(comanda))}
+                </summary>
+                <div class="note" style="margin-top:0.45rem;">Atualizada em: ${formatDateTime(comandaUpdatedAt(comanda))}</div>
+                <div class="table-wrap" style="margin-top:0.5rem;">
+                  <table>
+                    <thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Detalhe</th></tr></thead>
+                    <tbody>
+                      ${events.length
+                        ? events.map((e) => `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName || "-")}</td><td>${esc(e.type || "-")}</td><td>${esc(e.detail || "-")}</td></tr>`).join("")
+                        : `<tr><td colspan="4">Sem eventos registrados.</td></tr>`}
+                    </tbody>
+                  </table>
+                </div>
+                <div class="actions" style="margin-top:0.5rem;">
+                  <button class="btn secondary" data-action="open-comanda-details" data-comanda-id="${comanda.id}">Abrir detalhe completo</button>
+                </div>
+              </details>
+            `;
+          })
+          .join("")}
+      </div>
+    `;
+  }
+
   function renderAdminHistory() {
     const currentAudit = state.auditLog.slice(0, 250);
     const closures = state.history90;
@@ -1114,16 +1357,19 @@
         <div class="card">
           <h3>Historico Imutavel (Dia Atual)</h3>
           <p class="note">Alteracoes de funcionarios e admin registradas para conferencia.</p>
-          ${currentAudit.length
-            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table><thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th><th>Abrir</th></tr></thead><tbody>${currentAudit
-                .map(
-                  (e) =>
-                    `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName)} (${esc(e.actorRole)})</td><td>${esc(e.type)}</td><td>${esc(e.comandaId || "-")}</td><td>${esc(e.detail)}</td><td>${
-                      e.comandaId ? `<button class="btn secondary" data-action="open-comanda-details" data-comanda-id="${e.comandaId}">Ver</button>` : "-"
-                    }</td></tr>`
-                )
-                .join("")}</tbody></table></div>`
-            : `<div class="empty" style="margin-top:0.75rem;">Sem eventos registrados ainda.</div>`}
+          <details class="compact-details" style="margin-top:0.75rem;">
+            <summary>Ver alteracoes do dia (${currentAudit.length})</summary>
+            ${currentAudit.length
+              ? `<div class="table-wrap" style="margin-top:0.55rem;"><table><thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th><th>Abrir</th></tr></thead><tbody>${currentAudit
+                  .map(
+                    (e) =>
+                      `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName)} (${esc(e.actorRole)})</td><td>${esc(e.type)}</td><td>${esc(e.comandaId || "-")}</td><td>${esc(e.detail)}</td><td>${
+                        e.comandaId ? `<button class="btn secondary" data-action="open-comanda-details" data-comanda-id="${e.comandaId}">Ver</button>` : "-"
+                      }</td></tr>`
+                  )
+                  .join("")}</tbody></table></div>`
+              : `<div class="empty" style="margin-top:0.55rem;">Sem eventos registrados ainda.</div>`}
+          </details>
           ${renderComandaDetailsBox()}
         </div>
         <div class="card">
@@ -1182,7 +1428,6 @@
   function renderAdminMonitor() {
     const employees = state.users.filter((u) => u.role === "waiter" || u.role === "cook");
     const selected = uiState.monitorWaiterId;
-    const employeeIds = new Set(employees.map((w) => String(w.id)));
     const allEvents = [...uiState.remoteMonitorEvents, ...state.auditLog]
       .filter((event) => event.actorRole === "waiter" || event.actorRole === "cook")
       .sort((a, b) => new Date(b.ts || b.broadcastAt) - new Date(a.ts || a.broadcastAt));
@@ -1190,18 +1435,24 @@
       if (selected === "all") return true;
       return String(event.actorId) === String(selected);
     });
-    const openComandas = state.openComandas.filter((comanda) => {
-      if (selected === "all") return true;
-      return String(comanda.createdBy) === String(selected) || (comanda.events || []).some((e) => String(e.actorId) === String(selected));
-    }).filter((comanda) => matchesComandaSearch(comanda, uiState.adminComandaSearch));
+
+    const monitorComandas = [...state.openComandas, ...state.closedComandas.slice(0, 160)]
+      .filter((comanda) => {
+        if (selected === "all") return true;
+        return String(comanda.createdBy) === String(selected) || (comanda.events || []).some((e) => String(e.actorId) === String(selected));
+      })
+      .filter((comanda) => matchesComandaSearch(comanda, uiState.adminComandaSearch))
+      .sort((a, b) => new Date(comandaUpdatedAt(b) || 0) - new Date(comandaUpdatedAt(a) || 0));
+    const opened = monitorComandas.filter((c) => c.status !== "finalizada");
+    const finalized = monitorComandas.filter((c) => c.status === "finalizada");
 
     return `
       <div class="grid cols-2">
         <div class="card">
-          <h3>Monitor em Tempo Real</h3>
-          <p class="note">Acompanhe comandas abertas e alteracoes feitas por garcons e cozinheiros.</p>
+          <h3>Monitor Operacional</h3>
+          <p class="note">Acompanhe o fluxo entre garcom, cliente e cozinha com visao clara e objetiva.</p>
           <div class="field" style="margin-top:0.75rem;">
-            <label>Filtrar funcionario</label>
+            <label>Filtrar colaborador</label>
             <select data-action="monitor-filter" data-role="monitor-filter">
               <option value="all" ${selected === "all" ? "selected" : ""}>Todos</option>
               ${employees
@@ -1210,33 +1461,36 @@
             </select>
           </div>
           <div class="field" style="margin-top:0.5rem;">
-            <label>Busca por comanda</label>
-            <input data-role="admin-search" value="${esc(uiState.adminComandaSearch)}" placeholder="Mesa/referencia/comanda/cliente" />
+            <label>Buscar comanda</label>
+            <input data-role="admin-search" value="${esc(uiState.adminComandaSearch)}" placeholder="Mesa, referencia, codigo ou cliente" />
           </div>
-          ${openComandas.length
-            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table><thead><tr><th>Comanda</th><th>Mesa</th><th>Cliente</th><th>Total</th><th>Abrir</th></tr></thead><tbody>${openComandas
-                .map(
-                  (c) =>
-                    `<tr><td>${esc(c.id)}</td><td>${esc(c.table)}</td><td>${esc(c.customer || "-")}</td><td>${money(comandaTotal(c))}</td><td><button class="btn secondary" data-action="open-comanda-details" data-comanda-id="${c.id}">Ver</button></td></tr>`
-                )
+          <div class="kpis" style="margin-top:0.75rem;">
+            <div class="kpi"><p>Em andamento</p><b>${opened.length}</b></div>
+            <div class="kpi"><p>Finalizadas</p><b>${finalized.length}</b></div>
+          </div>
+          ${monitorComandas.length
+            ? `<div class="table-wrap monitor-table-wrap" style="margin-top:0.75rem;"><table class="monitor-table"><thead><tr><th>Comanda</th><th>Local</th><th>Cliente</th><th>Situacao</th><th>Atualizacao</th><th>Total</th><th>Acoes</th></tr></thead><tbody>${monitorComandas
+                .map((c) => {
+                  const kitchenBadge = renderKitchenIndicatorBadge(c, true);
+                  return `<tr><td data-label="Comanda">${esc(c.id)}</td><td data-label="Local">${esc(c.table)}</td><td data-label="Cliente">${esc(c.customer || "-")}</td><td data-label="Situacao">${c.status === "finalizada" ? '<span class="tag">Finalizada</span>' : '<span class="tag">Aberta</span>'}${kitchenBadge ? `<div style="margin-top:0.3rem;">${kitchenBadge}</div>` : ""}</td><td data-label="Atualizacao">${formatDateTime(comandaUpdatedAt(c))}</td><td data-label="Total">${money(comandaTotal(c))}</td><td data-label="Acoes"><button class="btn secondary" data-action="open-comanda-details" data-comanda-id="${c.id}">Ver</button></td></tr>`;
+                })
                 .join("")}</tbody></table></div>`
-            : `<div class="empty" style="margin-top:0.75rem;">Sem comandas abertas para o filtro escolhido.</div>`}
+            : `<div class="empty" style="margin-top:0.75rem;">Sem comandas para o filtro escolhido.</div>`}
+          <details class="compact-details" style="margin-top:0.75rem;">
+            <summary>Historico de alteracoes (oculto)</summary>
+            ${filteredEvents.length
+              ? `<div class="table-wrap" style="margin-top:0.65rem;"><table><thead><tr><th>Data</th><th>Funcionario</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th></tr></thead><tbody>${filteredEvents
+                  .slice(0, 220)
+                  .map(
+                    (e) =>
+                      `<tr><td>${formatDateTime(e.ts || e.broadcastAt)}</td><td>${esc(e.actorName || "-")}</td><td>${esc(e.type || "-")}</td><td>${esc(e.comandaId || "-")}</td><td>${esc(e.detail || "-")}</td></tr>`
+                  )
+                  .join("")}</tbody></table></div>`
+              : `<div class="empty" style="margin-top:0.65rem;">Sem eventos para o filtro atual.</div>`}
+          </details>
           ${renderComandaDetailsBox()}
         </div>
-        <div class="card">
-          <h3>Feed de Alteracoes</h3>
-          <p class="note">Eventos locais + broadcast Supabase.</p>
-          ${filteredEvents.length
-            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table><thead><tr><th>Data</th><th>Funcionario</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th></tr></thead><tbody>${filteredEvents
-                .filter((e) => selected === "all" || String(e.actorId) === String(selected) || !employeeIds.has(String(selected)))
-                .slice(0, 300)
-                .map(
-                  (e) =>
-                    `<tr><td>${formatDateTime(e.ts || e.broadcastAt)}</td><td>${esc(e.actorName || "-")}</td><td>${esc(e.type || "-")}</td><td>${esc(e.comandaId || "-")}</td><td>${esc(e.detail || "-")}</td></tr>`
-                )
-                .join("")}</tbody></table></div>`
-            : `<div class="empty" style="margin-top:0.75rem;">Sem eventos para o filtro atual.</div>`}
-        </div>
+        ${renderComandaRecordsCompact(monitorComandas, { title: "Registros por Comanda (Minimizados)", limit: 70 })}
       </div>
     `;
   }
@@ -1285,7 +1539,7 @@
     }
 
     app.innerHTML = `
-      <div class="container">
+      <div class="container app-shell role-admin">
         ${renderInstallBanner()}
         ${renderTopBar(user)}
         ${renderTabs("admin", tabs, uiState.adminTab)}
@@ -1308,10 +1562,16 @@
   }
 
   function renderWaiterCreateComanda() {
+    const activeComanda = uiState.waiterActiveComandaId ? findOpenComanda(uiState.waiterActiveComandaId) : null;
+    if (uiState.waiterActiveComandaId && !activeComanda) {
+      uiState.waiterActiveComandaId = null;
+    }
+
     return `
       <div class="grid cols-2">
         <div class="card">
           <h3>Abrir Pedido/Comanda</h3>
+          <p class="note">Depois de criar, a comanda continua aberta ate o fechamento pelo garcom.</p>
           <form id="create-comanda-form" class="form" style="margin-top:0.75rem;">
             <div class="field">
               <label>Mesa ou referencia</label>
@@ -1328,14 +1588,22 @@
             <button class="btn primary" type="submit">Criar Comanda</button>
           </form>
         </div>
-        <div class="card">
+        ${
+          activeComanda
+            ? `<div class="card">
+          <h3>Comanda ativa agora: ${esc(activeComanda.id)}</h3>
+          <p class="note">Adicione pedidos, acompanhe a cozinha e finalize quando necessario.</p>
+          <div style="margin-top:0.75rem;">${renderComandaCard(activeComanda, { forceExpanded: true })}</div>
+        </div>`
+            : `<div class="card">
           <h3>Resumo rapido</h3>
           <div class="kpis" style="margin-top:0.75rem;">
             <div class="kpi"><p>Abertas</p><b>${state.openComandas.length}</b></div>
             <div class="kpi"><p>Fila Cozinha</p><b>${listPendingKitchenItems().length}</b></div>
             <div class="kpi"><p>Fechadas hoje</p><b>${state.closedComandas.length}</b></div>
           </div>
-        </div>
+        </div>`
+        }
       </div>
     `;
   }
@@ -1346,7 +1614,7 @@
       <div class="grid cols-2">
         <div class="card">
           <h3>${title}</h3>
-          <p class="note">Venda rapida sem abrir comanda completa. Registra estoque, financeiro e historico.</p>
+          <p class="note">Venda rapida. Itens com fluxo de cozinha (Cozinha e Ofertas dependentes) entram na fila da cozinha com as mesmas regras da comanda.</p>
           <form id="quick-sale-form" data-role="quick-sale-form" data-context="${roleContext}" class="form" style="margin-top:0.75rem;">
             <div class="grid cols-2">
               <div class="field">
@@ -1373,19 +1641,39 @@
               </div>
             </div>
             <div class="field">
-              <label>Observacao (opcional)</label>
-              <input name="note" placeholder="Ex: consumo no balcao" />
+              <label>Cliente/recebedor (opcional)</label>
+              <input name="customer" placeholder="Nome do cliente" />
+            </div>
+            <div class="field">
+              <label>Observacao do pedido (opcional)</label>
+              <input name="note" placeholder="Ex: sem cebola, consumo no balcao" />
+            </div>
+            <div class="field" data-role="quick-delivery-box" style="display:none;">
+              <label><input name="isDelivery" data-role="quick-delivery-check" type="checkbox" /> Pedido para entrega</label>
+              <div class="grid cols-2" data-role="quick-delivery-fields" style="display:none;">
+                <div class="field">
+                  <label>Receber por</label>
+                  <input name="deliveryRecipient" placeholder="Nome de quem recebe" />
+                </div>
+                <div class="field">
+                  <label>Local da entrega</label>
+                  <input name="deliveryLocation" placeholder="Endereco/local de entrega" />
+                </div>
+              </div>
             </div>
             <div class="field">
               <label><input name="paidConfirm" type="checkbox" /> Venda paga e conferida</label>
             </div>
+            <div class="note" data-role="quick-kitchen-note">Para categorias fora de cozinha, a venda fecha imediatamente.</div>
             <button class="btn primary" type="submit">Finalizar Venda Avulsa</button>
           </form>
         </div>
         <div class="card">
           <h3>Regras</h3>
           <ul>
-            <li>Exige apenas produto, quantidade e pagamento confirmado.</li>
+            <li>Exige produto, quantidade e pagamento confirmado.</li>
+            <li>Itens com fluxo de cozinha entram no painel da cozinha.</li>
+            <li>Bar, Espetinhos, Avulso e Ofertas de pronta entrega finalizam como venda direta.</li>
             <li>Baixa estoque automaticamente.</li>
             <li>Entra no historico e nos indicadores financeiros.</li>
           </ul>
@@ -1398,7 +1686,8 @@
     const flags = [];
     if (item.canceled) flags.push('<span class="tag">Cancelado</span>');
     if (item.delivered) flags.push('<span class="tag">Entregue</span>');
-    if (!item.delivered && !item.canceled && item.category === "Cozinha") {
+    if (item.deliveryRequested) flags.push('<span class="tag">Entrega</span>');
+    if (!item.delivered && !item.canceled && itemNeedsKitchen(item)) {
       const remMin = Math.ceil(kitchenRemainingMs(item) / 60000);
       flags.push(`<span class="tag">Fila cozinha ~${remMin} min</span>`);
       flags.push(`<span class="tag">Status: ${esc(kitchenStatusLabel(item.kitchenStatus || "fila"))}</span>`);
@@ -1412,11 +1701,10 @@
         <div><b>${esc(item.name)}</b> x${item.qty} | ${money(item.priceAtSale)} un | Subtotal ${money(Number(item.qty) * Number(item.priceAtSale || 0))}</div>
         <div class="note">Categoria: ${esc(item.category)} | Criado em: ${formatDateTime(item.createdAt)}</div>
         ${item.waiterNote ? `<div class="note">Obs: ${esc(item.waiterNote)}</div>` : ""}
+        ${item.deliveryRequested ? `<div class="note"><b>Entrega:</b> ${esc(item.deliveryRecipient || "-")} | ${esc(item.deliveryLocation || "-")}</div>` : ""}
         ${item.canceled ? `<div class="note">Cancelamento: ${esc(item.cancelReason || "-")} ${item.cancelNote ? `| ${esc(item.cancelNote)}` : ""}</div>` : ""}
         <div class="actions">
           ${flags.join(" ")}
-          ${!item.canceled ? `<button class="btn secondary" data-action="increment-item" data-comanda-id="${comanda.id}" data-item-id="${item.id}">+1 igual</button>` : ""}
-          ${!item.canceled ? `<button class="btn danger" data-action="cancel-item" data-comanda-id="${comanda.id}" data-item-id="${item.id}">Devolucao/Cancelar</button>` : ""}
         </div>
       </div>
     `;
@@ -1453,21 +1741,41 @@
     `;
   }
 
-  function renderComandaCard(comanda) {
+  function renderComandaCard(comanda, options = {}) {
+    const forceExpanded = Boolean(options.forceExpanded);
     const total = comandaTotal(comanda);
+    const isCollapsed = forceExpanded ? false : isWaiterComandaCollapsed(comanda.id);
     const isFinalizeOpen = Boolean(uiState.finalizeOpenByComanda[comanda.id]);
-    const alertCount = kitchenAlertCount(comanda);
+    const kitchenIndicator = renderKitchenIndicatorBadge(comanda);
+    const validItemsCount = (comanda.items || []).filter((item) => !item.canceled).length;
+    const editableItemsCount = (comanda.items || []).filter((item) => !item.canceled).length;
+    const actor = getCurrentUser();
+    const canResolveIndicator = actor && actor.role === "waiter" && kitchenIndicator;
 
     return `
-      <div class="comanda-card">
-        <div>
-          <h3>${esc(comanda.id)} <span class="tag">Mesa: ${esc(comanda.table)}</span> ${alertCount ? `<span class="tag" style="border-color:#fecaca;background:#fff1f2;color:#b91c1c;">Alerta cozinha: ${alertCount}</span>` : ""}</h3>
-          <p class="note">Cliente: ${esc(comanda.customer || "Nao informado")} | Aberta em ${formatDateTime(comanda.createdAt)}</p>
-          <p class="note">Total atual: <b>${money(total)}</b></p>
+      <div class="comanda-card ${isCollapsed ? "is-collapsed" : ""} ${forceExpanded ? "is-focused" : ""}">
+        <div class="comanda-header">
+          <div>
+            <h3>${esc(comanda.id)} <span class="tag">Mesa: ${esc(comanda.table)}</span></h3>
+            ${kitchenIndicator ? `<div style="margin-top:0.3rem;">${kitchenIndicator}</div>` : ""}
+            <p class="note">Cliente: ${esc(comanda.customer || "Nao informado")} | Aberta em ${formatDateTime(comanda.createdAt)}</p>
+            <p class="note">Total atual: <b>${money(total)}</b></p>
+          </div>
+          ${forceExpanded ? "" : `<button class="btn secondary" data-action="toggle-comanda-collapse" data-comanda-id="${comanda.id}">${isCollapsed ? "Expandir" : "Minimizar"}</button>`}
         </div>
 
-        ${comanda.notes?.length ? `<div class="note">Obs da comanda: ${comanda.notes.map((n) => esc(n)).join(" | ")}</div>` : ""}
+        ${!isCollapsed && comanda.notes?.length ? `<div class="note">Obs da comanda: ${comanda.notes.map((n) => esc(n)).join(" | ")}</div>` : ""}
+        ${!isCollapsed && canResolveIndicator ? `<div class="actions indicator-actions"><button class="btn secondary" data-action="resolve-kitchen-indicator" data-comanda-id="${comanda.id}" data-mode="entendi">Entendi o alerta</button><button class="btn ok" data-action="resolve-kitchen-indicator" data-comanda-id="${comanda.id}" data-mode="entregue">Marcar como entregue</button></div>` : ""}
+        ${
+          !isCollapsed && editableItemsCount
+            ? `<div class="actions comanda-item-picker-actions"><button class="btn secondary compact-action" data-action="increment-item-picker" data-comanda-id="${comanda.id}">+1 em item da comanda</button><button class="btn danger compact-action" data-action="cancel-item-picker" data-comanda-id="${comanda.id}">Devolucao/cancelar item</button></div>`
+            : ""
+        }
 
+        ${
+          isCollapsed
+            ? `<div class="note">Itens: <b>${validItemsCount}</b> | Toque em "Expandir" para detalhes.${kitchenIndicator ? " Existe alerta de cozinha pendente." : ""}</div>`
+            : `
         <div class="item-list">
           ${(comanda.items || []).length ? (comanda.items || []).map((item) => renderItemRow(comanda, item)).join("") : `<div class="empty">Sem itens ainda.</div>`}
         </div>
@@ -1496,18 +1804,36 @@
               <input name="waiterNote" placeholder="Opcional" />
             </div>
           </div>
+          <div class="field" data-role="delivery-box" style="display:none;">
+            <label><input type="checkbox" name="isDelivery" data-role="delivery-check" /> Pedido para entrega</label>
+            <div class="grid cols-2" data-role="delivery-fields" style="display:none;">
+              <div class="field">
+                <label>Receber por</label>
+                <input name="deliveryRecipient" placeholder="Nome de quem recebe" />
+              </div>
+              <div class="field">
+                <label>Local da entrega</label>
+                <input name="deliveryLocation" placeholder="Endereco/local de entrega" />
+              </div>
+            </div>
+          </div>
           <div class="note" data-role="kitchen-estimate">Tempo estimado cozinha: -</div>
           <button class="btn secondary" type="submit">Adicionar ao pedido</button>
         </form>
+        `
+        }
 
-        <div class="actions">
-          <button class="btn ${alertCount ? "danger" : "secondary"}" data-action="open-comanda-alert" data-comanda-id="${comanda.id}">${alertCount ? "Abrir comanda (limpar alerta)" : "Abrir comanda"}</button>
+        ${
+          !isCollapsed
+            ? `<div class="actions">
           <button class="btn secondary" data-action="add-comanda-note" data-comanda-id="${comanda.id}">Adicionar observacao</button>
           <button class="btn secondary" data-action="print-comanda" data-comanda-id="${comanda.id}">Imprimir cupom</button>
           <button class="btn primary" data-action="toggle-finalize" data-comanda-id="${comanda.id}">${isFinalizeOpen ? "Fechar painel" : "Finalizar comanda"}</button>
-        </div>
+        </div>`
+            : ""
+        }
 
-        ${isFinalizeOpen ? renderFinalizePanel(comanda) : ""}
+        ${!isCollapsed && isFinalizeOpen ? renderFinalizePanel(comanda) : ""}
       </div>
     `;
   }
@@ -1526,6 +1852,7 @@
           <label>Busca por comanda (mesa/referencia/cliente/codigo)</label>
           <input data-role="waiter-search" value="${esc(uiState.waiterComandaSearch)}" placeholder="Ex: Mesa 7, CMD-0001, Joao" />
         </div>
+        <p class="note" style="margin-top:0.5rem;">Comandas ficam minimizadas por padrao para facilitar visualizacao no smartphone.</p>
       </div>
       ${filtered.length ? `<div class="comanda-grid" style="margin-top:1rem;">${filtered.map((c) => renderComandaCard(c)).join("")}</div>` : `<div class="empty" style="margin-top:1rem;">Nenhuma comanda encontrada para a busca.</div>`}
     `;
@@ -1541,9 +1868,10 @@
           <h3>Fila de Espera - Cozinha</h3>
           <p class="note">Tempo medio atual: <b>${avg} min</b></p>
           ${queue.length
-            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table><thead><tr><th>Comanda</th><th>Produto</th><th>Qtd</th><th>Status Cozinha</th><th>Tempo restante</th><th>Mesa/ref</th></tr></thead><tbody>${queue
+            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="responsive-stack waiter-kitchen-table"><thead><tr><th>Comanda</th><th>Produto</th><th>Qtd</th><th>Status Cozinha</th><th>Tempo restante</th><th>Mesa/ref</th></tr></thead><tbody>${queue
                 .map(
-                  (r) => `<tr><td>${esc(r.comanda.id)}</td><td>${esc(r.item.name)}</td><td>${r.item.qty}</td><td><span class="tag">${esc(kitchenStatusLabel(r.item.kitchenStatus || "fila"))}</span></td><td>${Math.ceil(r.remainingMs / 60000)} min</td><td>${esc(r.comanda.table)}</td></tr>`
+                  (r) =>
+                    `<tr><td data-label="Comanda">${esc(r.comanda.id)}</td><td data-label="Produto">${esc(r.item.name)}</td><td data-label="Qtd">${r.item.qty}</td><td data-label="Status Cozinha"><span class="tag">${esc(kitchenStatusLabel(r.item.kitchenStatus || "fila"))}</span></td><td data-label="Tempo restante">${Math.ceil(r.remainingMs / 60000)} min</td><td data-label="Mesa/ref">${esc(r.comanda.table)}</td></tr>`
                 )
                 .join("")}</tbody></table></div>`
             : `<div class="empty" style="margin-top:0.75rem;">Sem pedidos pendentes da cozinha.</div>`}
@@ -1551,6 +1879,65 @@
         <div class="card">
           <h3>Regra de calculo aplicada</h3>
           <p class="note">Tempo informado por produto (admin) + soma do restante dos pedidos de cozinha nao entregues, descontando o tempo que ja passou. Alertas de cozinha aparecem nas comandas abertas.</p>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderWaiterCatalog() {
+    const search = String(uiState.waiterCatalogSearch || "").trim().toLowerCase();
+    const categoryFilter = uiState.waiterCatalogCategory || "all";
+    const rows = state.products
+      .filter((product) => {
+        if (categoryFilter !== "all" && product.category !== categoryFilter) return false;
+        if (!search) return true;
+        return (
+          String(product.name || "").toLowerCase().includes(search) ||
+          String(product.category || "").toLowerCase().includes(search) ||
+          String(product.subcategory || "").toLowerCase().includes(search)
+        );
+      })
+      .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "pt-BR"));
+
+    const availableCount = rows.filter((p) => p.available !== false && Number(p.stock || 0) > 0).length;
+    const unavailableCount = rows.length - availableCount;
+
+    return `
+      <div class="grid cols-2">
+        <div class="card">
+          <h3>Consulta de preco e disponibilidade</h3>
+          <p class="note">Consulte valores do cardapio e disponibilidade antes de abrir/atualizar pedidos.</p>
+          <div class="grid cols-2" style="margin-top:0.75rem;">
+            <div class="field">
+              <label>Buscar produto</label>
+              <input data-role="waiter-catalog-search" value="${esc(uiState.waiterCatalogSearch)}" placeholder="Ex: cerveja, combo, pastel" />
+            </div>
+            <div class="field">
+              <label>Categoria</label>
+              <select data-role="waiter-catalog-category">
+                <option value="all" ${categoryFilter === "all" ? "selected" : ""}>Todas</option>
+                ${CATEGORIES.map((category) => `<option value="${category}" ${categoryFilter === category ? "selected" : ""}>${esc(category)}</option>`).join("")}
+              </select>
+            </div>
+          </div>
+          <div class="kpis" style="margin-top:0.75rem;">
+            <div class="kpi"><p>Itens listados</p><b>${rows.length}</b></div>
+            <div class="kpi"><p>Disponiveis</p><b>${availableCount}</b></div>
+            <div class="kpi"><p>Indisponiveis</p><b>${unavailableCount}</b></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Cardapio Atual</h3>
+          ${rows.length
+            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="responsive-stack waiter-catalog-table"><thead><tr><th>Produto</th><th>Categoria</th><th>Preco</th><th>Disponibilidade</th><th>Estoque</th><th>Fluxo</th></tr></thead><tbody>${rows
+                .map((p) => {
+                  const status =
+                    p.available === false ? "Indisponivel (admin)" : Number(p.stock || 0) <= 0 ? "Sem estoque" : "Disponivel";
+                  const flow = productNeedsKitchen(p) ? "Cozinha" : "Pronta entrega";
+                  return `<tr><td data-label="Produto">${esc(p.name)}</td><td data-label="Categoria">${esc(categoryDisplay(p.category, p.subcategory || ""))}</td><td data-label="Preco">${money(p.price)}</td><td data-label="Disponibilidade">${esc(status)}</td><td data-label="Estoque">${Number(p.stock || 0)}</td><td data-label="Fluxo">${flow}</td></tr>`;
+                })
+                .join("")}</tbody></table></div>`
+            : `<div class="empty" style="margin-top:0.75rem;">Nenhum item encontrado para o filtro informado.</div>`}
         </div>
       </div>
     `;
@@ -1564,24 +1951,30 @@
       <div class="grid cols-2">
         <div class="card">
           <h3>Historico de Alteracoes (imutavel)</h3>
-          ${todayAudit.length
-            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table><thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th></tr></thead><tbody>${todayAudit
-                .map(
-                  (e) => `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName)}</td><td>${esc(e.type)}</td><td>${esc(e.comandaId || "-")}</td><td>${esc(e.detail)}</td></tr>`
-                )
-                .join("")}</tbody></table></div>`
-            : `<div class="empty" style="margin-top:0.75rem;">Sem eventos ainda.</div>`}
+          <details class="compact-details" style="margin-top:0.75rem;">
+            <summary>Ver alteracoes (${todayAudit.length})</summary>
+            ${todayAudit.length
+              ? `<div class="table-wrap" style="margin-top:0.55rem;"><table><thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th></tr></thead><tbody>${todayAudit
+                  .map(
+                    (e) => `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName)}</td><td>${esc(e.type)}</td><td>${esc(e.comandaId || "-")}</td><td>${esc(e.detail)}</td></tr>`
+                  )
+                  .join("")}</tbody></table></div>`
+              : `<div class="empty" style="margin-top:0.55rem;">Sem eventos ainda.</div>`}
+          </details>
         </div>
         <div class="card">
           <h3>Comandas Finalizadas Hoje</h3>
-          ${closed.length
-            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table><thead><tr><th>Comanda</th><th>Cliente</th><th>Total</th><th>Pagamento</th><th>Fechada em</th><th>Abrir</th></tr></thead><tbody>${closed
-                .map(
-                  (c) =>
-                    `<tr><td>${esc(c.id)}</td><td>${esc(c.customer || "-")}</td><td>${money(comandaTotal(c))}</td><td>${esc(paymentLabel(c.payment?.method || "-"))}</td><td>${formatDateTime(c.closedAt)}</td><td><button class="btn secondary" data-action="open-comanda-details" data-comanda-id="${c.id}">Ver</button></td></tr>`
-                )
-                .join("")}</tbody></table></div>`
-            : `<div class="empty" style="margin-top:0.75rem;">Ainda sem comandas finalizadas.</div>`}
+          <details class="compact-details" style="margin-top:0.75rem;">
+            <summary>Ver finalizadas (${closed.length})</summary>
+            ${closed.length
+              ? `<div class="table-wrap" style="margin-top:0.55rem;"><table><thead><tr><th>Comanda</th><th>Cliente</th><th>Total</th><th>Pagamento</th><th>Fechada em</th><th>Abrir</th></tr></thead><tbody>${closed
+                  .map(
+                    (c) =>
+                      `<tr><td>${esc(c.id)}</td><td>${esc(c.customer || "-")}</td><td>${money(comandaTotal(c))}</td><td>${esc(paymentLabel(c.payment?.method || "-"))}</td><td>${formatDateTime(c.closedAt)}</td><td><button class="btn secondary" data-action="open-comanda-details" data-comanda-id="${c.id}">Ver</button></td></tr>`
+                  )
+                  .join("")}</tbody></table></div>`
+              : `<div class="empty" style="margin-top:0.55rem;">Ainda sem comandas finalizadas.</div>`}
+          </details>
           ${renderComandaDetailsBox()}
         </div>
       </div>
@@ -1592,7 +1985,7 @@
     const rows = [];
     for (const comanda of state.openComandas) {
       for (const item of comanda.items || []) {
-        if (item.category === "Cozinha" && !item.canceled && !item.delivered) {
+        if (itemNeedsKitchen(item) && !item.canceled && !item.delivered) {
           rows.push({ comanda, item });
         }
       }
@@ -1617,15 +2010,17 @@
         <div class="card">
           <h3>Ambiente Cozinha</h3>
           <p class="note">Receba pedidos de cozinha em tempo real e atualize o status para garcom/admin.</p>
+          <p class="note" style="margin-top:0.25rem;">Este painel exibe itens com fluxo de cozinha (Cozinha e Ofertas dependentes da cozinha).</p>
           <div class="field" style="margin-top:0.75rem;">
             <label>Busca por comanda</label>
             <input data-role="cook-search" value="${esc(uiState.cookSearch)}" placeholder="Mesa/referencia/comanda/cliente" />
           </div>
+          <p class="note" style="margin-top:0.6rem;">Pedidos marcados como entrega exibem recebedor e local para separacao correta.</p>
           ${rows.length
-            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table><thead><tr><th>Comanda</th><th>Mesa/ref</th><th>Cliente</th><th>Produto</th><th>Qtd</th><th>Status</th><th>Acao</th></tr></thead><tbody>${rows
+            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table><thead><tr><th>Comanda</th><th>Mesa/ref</th><th>Cliente</th><th>Produto</th><th>Qtd</th><th>Obs</th><th>Status</th><th>Entrega</th><th>Acao</th></tr></thead><tbody>${rows
                 .map(
                   (row) =>
-                    `<tr><td>${esc(row.comanda.id)}</td><td>${esc(row.comanda.table)}</td><td>${esc(row.comanda.customer || "-")}</td><td>${esc(row.item.name)}</td><td>${row.item.qty}</td><td><span class="tag">${esc(kitchenStatusLabel(row.item.kitchenStatus || "fila"))}</span></td><td><div class="actions"><button class="btn secondary" data-action="cook-status" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-status="cozinhando">Cozinhando</button><button class="btn danger" data-action="cook-status" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-status="em_falta">Em falta</button><button class="btn ok" data-action="cook-status" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-status="entregue">Entregue</button></div></td></tr>`
+                    `<tr><td>${esc(row.comanda.id)}</td><td>${esc(row.comanda.table)}</td><td>${esc(row.comanda.customer || "-")}</td><td>${esc(row.item.name)}</td><td>${row.item.qty}</td><td>${esc(row.item.waiterNote || "-")}</td><td><span class="tag">${esc(kitchenStatusLabel(row.item.kitchenStatus || "fila"))}</span></td><td>${row.item.deliveryRequested ? `<div><b>${esc(row.item.deliveryRecipient || "-")}</b></div><div class="note">${esc(row.item.deliveryLocation || "-")}</div>` : "Balcao/Mesa"}</td><td><div class="actions"><button class="btn secondary" data-action="cook-status" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-status="cozinhando">Cozinhando</button><button class="btn danger" data-action="cook-status" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-status="em_falta">Em falta</button><button class="btn ok" data-action="cook-status" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-status="entregue">Entregue</button></div></td></tr>`
                 )
                 .join("")}</tbody></table></div>`
             : `<div class="empty" style="margin-top:0.75rem;">Sem pedidos ativos na cozinha.</div>`}
@@ -1640,14 +2035,17 @@
       <div class="card">
         <h3>Historico da Cozinha</h3>
         <p class="note">Limpo automaticamente ao fechar o caixa.</p>
-        ${rows.length
-          ? `<div class="table-wrap" style="margin-top:0.75rem;"><table><thead><tr><th>Data</th><th>Comanda</th><th>Mesa/ref</th><th>Produto</th><th>Qtd</th><th>Status final</th><th>Cozinheiro</th></tr></thead><tbody>${rows
-              .map(
-                (row) =>
-                  `<tr><td>${formatDateTime(row.deliveredAt || row.updatedAt)}</td><td>${esc(row.comandaId)}</td><td>${esc(row.table || "-")}</td><td>${esc(row.itemName)}</td><td>${row.qty}</td><td>${esc(kitchenStatusLabel(row.status || "entregue"))}</td><td>${esc(row.cookName || "-")}</td></tr>`
-              )
-              .join("")}</tbody></table></div>`
-          : `<div class="empty" style="margin-top:0.75rem;">Sem pedidos entregues pela cozinha neste caixa.</div>`}
+        <details class="compact-details" style="margin-top:0.75rem;">
+          <summary>Ver historico (${rows.length})</summary>
+          ${rows.length
+            ? `<div class="table-wrap" style="margin-top:0.55rem;"><table><thead><tr><th>Data</th><th>Comanda</th><th>Mesa/ref</th><th>Produto</th><th>Qtd</th><th>Status final</th><th>Entrega</th><th>Cozinheiro</th></tr></thead><tbody>${rows
+                .map(
+                  (row) =>
+                    `<tr><td>${formatDateTime(row.deliveredAt || row.updatedAt)}</td><td>${esc(row.comandaId)}</td><td>${esc(row.table || "-")}</td><td>${esc(row.itemName)}</td><td>${row.qty}</td><td>${esc(kitchenStatusLabel(row.status || "entregue"))}</td><td>${row.deliveryRequested ? `<div><b>${esc(row.deliveryRecipient || "-")}</b></div><div class="note">${esc(row.deliveryLocation || "-")}</div>` : "Balcao/Mesa"}</td><td>${esc(row.cookName || "-")}</td></tr>`
+                )
+                .join("")}</tbody></table></div>`
+            : `<div class="empty" style="margin-top:0.55rem;">Sem pedidos entregues pela cozinha neste caixa.</div>`}
+        </details>
       </div>
     `;
   }
@@ -1660,7 +2058,7 @@
     const content = uiState.cookTab === "historico" ? renderCookHistory() : renderCookActive();
 
     app.innerHTML = `
-      <div class="container">
+      <div class="container app-shell role-cook">
         ${renderInstallBanner()}
         ${renderTopBar(user)}
         ${renderTabs("cook", tabs, uiState.cookTab)}
@@ -1671,11 +2069,11 @@
 
   function renderWaiter(user) {
     const tabs = [
-      { key: "home", label: "Inicio" },
       { key: "abrir", label: "Abrir pedido/comanda" },
       { key: "abertas", label: "Comandas abertas" },
-      { key: "avulsa", label: "Venda Avulsa" },
       { key: "cozinha", label: "Fila cozinha" },
+      { key: "consulta", label: "Consulta precos" },
+      { key: "avulsa", label: "Venda Avulsa" },
       { key: "historico", label: "Historico" }
     ];
 
@@ -1693,15 +2091,18 @@
       case "cozinha":
         content = renderWaiterKitchen();
         break;
+      case "consulta":
+        content = renderWaiterCatalog();
+        break;
       case "historico":
         content = renderWaiterHistory();
         break;
       default:
-        content = renderWaiterHome();
+        content = renderWaiterCreateComanda();
     }
 
     app.innerHTML = `
-      <div class="container">
+      <div class="container app-shell role-waiter">
         ${renderInstallBanner()}
         ${renderTopBar(user)}
         ${renderTabs("waiter", tabs, uiState.waiterTab)}
@@ -1734,6 +2135,7 @@
       const productSel = form.querySelector('[data-role="item-product"]');
       fillProductSelect(productSel, categorySel.value);
       updateKitchenEstimate(form);
+      updateDeliveryFields(form);
     });
 
     document.querySelectorAll('[data-role="payment-method"]').forEach((select) => {
@@ -1742,7 +2144,64 @@
 
     document.querySelectorAll('form[data-role="quick-sale-form"]').forEach((form) => {
       fillQuickSaleProductSelect(form);
+      updateQuickSaleFlow(form);
     });
+
+    const addProductForm = document.getElementById("add-product-form");
+    if (addProductForm) {
+      updateAdminProductSubmenu(addProductForm);
+    }
+  }
+
+  function updateAdminProductSubmenu(form) {
+    const category = form?.category?.value || "";
+    const box = form?.querySelector('[data-role="admin-bar-submenu"]');
+    const offerBox = form?.querySelector('[data-role="admin-offer-kitchen"]');
+    const subSel = form?.subcategory;
+    const offerNeedsKitchen = form?.offerNeedsKitchen;
+    if (!box || !subSel) return;
+
+    const isBar = category === "Bar";
+    const isOffer = category === "Ofertas";
+    box.style.display = isBar ? "grid" : "none";
+    if (offerBox) offerBox.style.display = isOffer ? "grid" : "none";
+    if (!isBar) {
+      subSel.value = "Geral";
+    } else if (!BAR_SUBCATEGORIES.includes(subSel.value)) {
+      subSel.value = "Geral";
+    }
+    if (offerNeedsKitchen && !isOffer) {
+      offerNeedsKitchen.checked = false;
+    }
+  }
+
+  function updateDeliveryFields(form) {
+    const category = form.querySelector('[data-role="item-category"]')?.value;
+    const productId = Number(form.querySelector('[data-role="item-product"]')?.value || 0);
+    const product = state.products.find((p) => p.id === productId && p.category === category);
+    const box = form.querySelector('[data-role="delivery-box"]');
+    const fields = form.querySelector('[data-role="delivery-fields"]');
+    const check = form.querySelector('[data-role="delivery-check"]');
+    const recipient = form.querySelector('input[name="deliveryRecipient"]');
+    const location = form.querySelector('input[name="deliveryLocation"]');
+    if (!box || !fields || !check || !recipient || !location) return;
+
+    const isKitchen = productNeedsKitchen(product);
+    if (!isKitchen) {
+      box.style.display = "none";
+      fields.style.display = "none";
+      check.checked = false;
+      recipient.value = "";
+      location.value = "";
+      recipient.required = false;
+      location.required = false;
+      return;
+    }
+
+    box.style.display = "grid";
+    fields.style.display = check.checked ? "grid" : "none";
+    recipient.required = check.checked;
+    location.required = check.checked;
   }
 
   function fillProductSelect(selectElement, category) {
@@ -1755,12 +2214,17 @@
     }
 
     selectElement.innerHTML = options
-      .map((p) => `<option value="${p.id}" ${p.stock <= 0 ? "disabled" : ""}>${esc(p.name)} | ${money(p.price)} | estoque ${p.stock}</option>`)
+      .map(
+        (p) =>
+          `<option value="${p.id}" ${!productIsAvailable(p) ? "disabled" : ""}>${esc(p.name)}${p.category === "Bar" ? ` (${esc(p.subcategory || "Geral")})` : ""}${p.category === "Ofertas" ? ` (${p.requiresKitchen ? "cozinha" : "pronta entrega"})` : ""} | ${money(p.price)} | estoque ${p.stock}${p.available === false ? " | indisponivel" : ""}</option>`
+      )
       .join("");
 
-    const firstAvailable = options.find((p) => p.stock > 0);
+    const firstAvailable = options.find((p) => productIsAvailable(p));
     if (firstAvailable) {
       selectElement.value = String(firstAvailable.id);
+    } else {
+      selectElement.selectedIndex = 0;
     }
   }
 
@@ -1774,12 +2238,54 @@
       return;
     }
     selectElement.innerHTML = options
-      .map((p) => `<option value="${p.id}" ${p.stock <= 0 ? "disabled" : ""}>${esc(p.name)} | ${money(p.price)} | estoque ${p.stock}</option>`)
+      .map(
+        (p) =>
+          `<option value="${p.id}" ${!productIsAvailable(p) ? "disabled" : ""}>${esc(p.name)}${p.category === "Bar" ? ` (${esc(p.subcategory || "Geral")})` : ""}${p.category === "Ofertas" ? ` (${p.requiresKitchen ? "cozinha" : "pronta entrega"})` : ""} | ${money(p.price)} | estoque ${p.stock}${p.available === false ? " | indisponivel" : ""}</option>`
+      )
       .join("");
-    const firstAvailable = options.find((p) => p.stock > 0);
+    const firstAvailable = options.find((p) => productIsAvailable(p));
     if (firstAvailable) {
       selectElement.value = String(firstAvailable.id);
+    } else {
+      selectElement.selectedIndex = 0;
     }
+  }
+
+  function updateQuickSaleFlow(form) {
+    if (!form) return;
+    const category = form.querySelector('[data-role="quick-category"]')?.value;
+    const productId = Number(form.querySelector('[data-role="quick-product"]')?.value || 0);
+    const selectedProduct = state.products.find((p) => p.id === productId && p.category === category);
+    const deliveryBox = form.querySelector('[data-role="quick-delivery-box"]');
+    const deliveryFields = form.querySelector('[data-role="quick-delivery-fields"]');
+    const deliveryCheck = form.querySelector('[data-role="quick-delivery-check"]');
+    const recipient = form.querySelector('input[name="deliveryRecipient"]');
+    const location = form.querySelector('input[name="deliveryLocation"]');
+    const note = form.querySelector('[data-role="quick-kitchen-note"]');
+    const isKitchen = selectedProduct ? productNeedsKitchen(selectedProduct) : category === "Cozinha";
+
+    if (note) {
+      note.textContent = isKitchen
+        ? "Item com fluxo de cozinha: sera criada uma comanda avulsa e o pedido entrara na fila da cozinha."
+        : "Item sem fluxo de cozinha: a venda fecha imediatamente.";
+    }
+    if (!deliveryBox || !deliveryFields || !deliveryCheck || !recipient || !location) return;
+
+    if (!isKitchen) {
+      deliveryBox.style.display = "none";
+      deliveryFields.style.display = "none";
+      deliveryCheck.checked = false;
+      recipient.required = false;
+      location.required = false;
+      recipient.value = "";
+      location.value = "";
+      return;
+    }
+
+    deliveryBox.style.display = "grid";
+    deliveryFields.style.display = deliveryCheck.checked ? "grid" : "none";
+    recipient.required = deliveryCheck.checked;
+    location.required = deliveryCheck.checked;
   }
 
   function updateKitchenEstimate(form) {
@@ -1790,14 +2296,13 @@
     const productId = Number(form.querySelector('[data-role="item-product"]')?.value || 0);
     const qty = Math.max(1, Number(form.querySelector('input[name="qty"]')?.value || 1));
 
-    if (category !== "Cozinha") {
-      info.textContent = "Tempo estimado cozinha: nao aplicavel para esta categoria.";
-      return;
-    }
-
-    const product = state.products.find((p) => p.id === productId);
+    const product = state.products.find((p) => p.id === productId && p.category === category);
     if (!product) {
       info.textContent = "Tempo estimado cozinha: selecione um produto.";
+      return;
+    }
+    if (!productNeedsKitchen(product)) {
+      info.textContent = "Tempo estimado cozinha: nao aplicavel para esta categoria.";
       return;
     }
 
@@ -1816,18 +2321,59 @@
   }
 
   function kitchenAlertCount(comanda) {
-    return (comanda.items || []).filter((item) => item.category === "Cozinha" && item.kitchenAlertUnread && !item.canceled).length;
+    return (comanda.items || []).filter((item) => itemNeedsKitchen(item) && item.kitchenAlertUnread).length;
   }
 
-  function clearComandaKitchenAlerts(comandaId) {
+  function clearComandaKitchenAlerts(comandaId, options = {}) {
     const comanda = findOpenComanda(comandaId);
     if (!comanda) return;
     for (const item of comanda.items || []) {
-      if (item.category === "Cozinha") {
+      if (itemNeedsKitchen(item)) {
         item.kitchenAlertUnread = false;
       }
     }
     comanda.kitchenAlertUnread = false;
+    if (!options.skipPersist) {
+      saveState();
+    }
+    if (!options.skipRender) {
+      render();
+    }
+  }
+
+  function resolveComandaKitchenIndicator(comandaId, mode = "entendi") {
+    const actor = currentActor();
+    if (!actor || (actor.role !== "waiter" && actor.role !== "admin")) {
+      alert("Somente garcom ou administrador podem resolver alertas.");
+      return;
+    }
+    const comanda = findOpenComanda(comandaId);
+    if (!comanda) return;
+
+    let resolvedCount = 0;
+    for (const item of comanda.items || []) {
+      if (!itemNeedsKitchen(item) || !item.kitchenAlertUnread) continue;
+      item.kitchenAlertUnread = false;
+      if (mode === "entregue" && item.kitchenStatus === "entregue") {
+        item.waiterDeliveredAt = isoNow();
+        item.waiterDeliveredById = actor.id;
+        item.waiterDeliveredByName = actor.name;
+      }
+      resolvedCount += 1;
+    }
+
+    comanda.kitchenAlertUnread = kitchenAlertCount(comanda) > 0;
+    if (resolvedCount) {
+      appendComandaEvent(comanda, {
+        actor,
+        type: mode === "entregue" ? "garcom_entregou_pedido" : "garcom_ciente_alerta",
+        detail:
+          mode === "entregue"
+            ? `Garcom marcou ${resolvedCount} alerta(s) da cozinha como entregue ao cliente.`
+            : `Garcom confirmou leitura de ${resolvedCount} alerta(s) da cozinha.`
+      });
+    }
+
     saveState();
     render();
   }
@@ -1841,6 +2387,28 @@
       String(comanda.customer || "").toLowerCase().includes(s)
     );
   }
+
+  function isWaiterComandaCollapsed(comandaId) {
+    const key = String(comandaId || "");
+    const value = uiState.waiterCollapsedByComanda[key];
+    return value === undefined ? true : Boolean(value);
+  }
+
+  function toggleWaiterComandaCollapse(comandaId) {
+    const key = String(comandaId || "");
+    const nextCollapsed = !isWaiterComandaCollapsed(key);
+    uiState.waiterCollapsedByComanda[key] = nextCollapsed;
+    if (nextCollapsed) {
+      delete uiState.finalizeOpenByComanda[key];
+      if (uiState.waiterActiveComandaId === key) {
+        uiState.waiterActiveComandaId = null;
+      }
+    } else {
+      uiState.waiterActiveComandaId = key;
+    }
+    render();
+  }
+
   function login(login, password) {
     const user = findUserByLoginPassword(login, password);
     if (!user) {
@@ -1857,6 +2425,7 @@
   function logout() {
     sessionUserId = null;
     persistSessionUserId(null);
+    uiState.waiterActiveComandaId = null;
     saveState({ skipCloud: true, touchMeta: false });
     render();
   }
@@ -1865,6 +2434,9 @@
     const actor = currentActor();
     const name = form.name.value.trim();
     const category = form.category.value;
+    const subcategory = category === "Bar" ? normalizeProductSubcategory({ category: "Bar", subcategory: form.subcategory.value }) : "";
+    const available = Boolean(form.available?.checked);
+    const requiresKitchen = category === "Cozinha" ? true : category === "Ofertas" ? Boolean(form.offerNeedsKitchen?.checked) : false;
     const price = parseNumber(form.price.value);
     const stock = Math.max(0, Number(form.stock.value || 0));
     const prepTime = Math.max(0, Number(form.prepTime.value || 0));
@@ -1875,8 +2447,8 @@
       return;
     }
 
-    state.products.push({ id: state.seq.product++, name, category, price, stock, prepTime, cost });
-    appendAudit({ actor, type: "produto_add", detail: `Produto ${name} criado em ${category}.` });
+    state.products.push({ id: state.seq.product++, name, category, subcategory, price, stock, prepTime, cost, available, requiresKitchen });
+    appendAudit({ actor, type: "produto_add", detail: `Produto ${name} criado em ${categoryDisplay(category, subcategory)}.` });
     saveState();
     render();
   }
@@ -1896,14 +2468,49 @@
     if (prepTime === null) return;
     const cost = prompt("Custo unitario:", String(p.cost || 0));
     if (cost === null) return;
+    const availablePrompt = prompt("Disponivel no cardapio? (sim/nao):", p.available === false ? "nao" : "sim");
+    if (availablePrompt === null) return;
+    const available = !["nao", "n", "0", "false"].includes(availablePrompt.trim().toLowerCase());
+    if (p.category === "Bar") {
+      const subcategory = prompt("Subcategoria do bar (Doses/Copo ou Geral):", String(p.subcategory || "Geral"));
+      if (subcategory === null) return;
+      const rawSub = subcategory.trim();
+      p.subcategory = rawSub.toLowerCase() === "doses" ? "Doses/Copo" : BAR_SUBCATEGORIES.includes(rawSub) ? rawSub : "Geral";
+    } else {
+      p.subcategory = "";
+    }
+    if (p.category === "Cozinha") {
+      p.requiresKitchen = true;
+    } else if (p.category === "Ofertas") {
+      const offerKitchenPrompt = prompt("Oferta depende da cozinha? (sim/nao):", p.requiresKitchen ? "sim" : "nao");
+      if (offerKitchenPrompt === null) return;
+      p.requiresKitchen = ["sim", "s", "1", "true"].includes(offerKitchenPrompt.trim().toLowerCase());
+    } else {
+      p.requiresKitchen = false;
+    }
 
     p.name = name.trim() || p.name;
     p.price = Math.max(0, parseNumber(price));
     p.stock = Math.max(0, Number(stock));
     p.prepTime = Math.max(0, Number(prepTime));
     p.cost = Math.max(0, parseNumber(cost));
+    p.available = available;
 
     appendAudit({ actor, type: "produto_edit", detail: `Produto ${p.name} alterado.` });
+    saveState();
+    render();
+  }
+
+  function toggleProductAvailability(productId) {
+    const actor = currentActor();
+    const product = state.products.find((p) => p.id === productId);
+    if (!product) return;
+    product.available = product.available === false;
+    appendAudit({
+      actor,
+      type: "produto_disponibilidade",
+      detail: `Produto ${product.name} ${product.available ? "disponibilizado" : "indisponibilizado"} no cardapio.`
+    });
     saveState();
     render();
   }
@@ -2085,7 +2692,9 @@
       detail: `Comanda aberta na ${table}${customer ? ` para ${customer}` : ""}.`
     });
 
-    uiState.waiterTab = "abertas";
+    uiState.waiterTab = "abrir";
+    uiState.waiterActiveComandaId = comanda.id;
+    uiState.waiterCollapsedByComanda[comanda.id] = false;
     saveState();
     render();
   }
@@ -2096,7 +2705,11 @@
     const productId = Number(form.productId.value || 0);
     const qty = Math.max(1, Number(form.qty.value || 1));
     const paymentMethod = form.paymentMethod.value;
+    const customer = form.customer.value.trim();
     const note = form.note.value.trim();
+    const isDeliveryRaw = Boolean(form.isDelivery?.checked);
+    const deliveryRecipient = String(form.deliveryRecipient?.value || "").trim();
+    const deliveryLocation = String(form.deliveryLocation?.value || "").trim();
     const paidConfirm = form.paidConfirm.checked;
 
     if (!paidConfirm) {
@@ -2109,17 +2722,108 @@
       alert("Produto invalido para venda avulsa.");
       return;
     }
+    if (product.available === false) {
+      alert(`Produto ${product.name} esta indisponivel no cardapio.`);
+      return;
+    }
     if (product.stock < qty) {
       alert(`Estoque insuficiente para ${product.name}. Disponivel: ${product.stock}`);
+      return;
+    }
+    const needsKitchen = productNeedsKitchen(product);
+    const isDelivery = needsKitchen && isDeliveryRaw;
+    if (needsKitchen && isDelivery && (!deliveryRecipient || !deliveryLocation)) {
+      alert("Para entrega na cozinha, informe quem recebe e o local.");
       return;
     }
 
     product.stock -= qty;
 
+    if (needsKitchen) {
+      const waitingBefore = totalKitchenQueueMs();
+      const item = {
+        id: `IT-${String(state.seq.item++).padStart(5, "0")}`,
+        productId: product.id,
+        name: product.name,
+        category: product.category,
+        qty,
+        priceAtSale: Number(product.price),
+        costAtSale: Number(product.cost || 0),
+        prepTimeAtSale: Number(product.prepTime || 0),
+        requiresKitchen: Boolean(product.requiresKitchen),
+        needsKitchen: true,
+        waiterNote: note,
+        noteType: "",
+        createdAt: isoNow(),
+        delivered: false,
+        deliveredAt: null,
+        kitchenStatus: "fila",
+        kitchenStatusAt: isoNow(),
+        kitchenStatusById: null,
+        kitchenStatusByName: "",
+        kitchenAlertUnread: true,
+        deliveryRequested: isDelivery,
+        deliveryRecipient: isDelivery ? deliveryRecipient : "",
+        deliveryLocation: isDelivery ? deliveryLocation : "",
+        canceled: false,
+        canceledAt: null,
+        cancelReason: "",
+        cancelNote: ""
+      };
+      const prepMs = item.prepTimeAtSale * qty * 60 * 1000;
+      item.etaAt = new Date(Date.now() + waitingBefore + prepMs).toISOString();
+
+      const saleComanda = {
+        id: `AVK-${String(state.seq.sale++).padStart(5, "0")}`,
+        table: product.category === "Ofertas" ? "Avulsa Oferta (Cozinha)" : "Avulsa Cozinha",
+        customer: customer || (isDelivery ? deliveryRecipient : ""),
+        createdAt: isoNow(),
+        createdBy: actor.id,
+        status: "aberta",
+        notes: [product.category === "Ofertas" ? "Venda avulsa de oferta (cozinha)" : "Venda avulsa de cozinha", ...(note ? [note] : [])],
+        items: [item],
+        events: [],
+        payment: {
+          method: paymentMethod,
+          methodLabel: paymentLabel(paymentMethod),
+          verifiedAt: isoNow(),
+          customerName: customer || (isDelivery ? deliveryRecipient : ""),
+          pixCode: ""
+        },
+        pixCodeDraft: null,
+        kitchenAlertUnread: true,
+        isQuickKitchenSale: true,
+        quickSalePrepaid: true
+      };
+
+      appendComandaEvent(saleComanda, {
+        actor,
+        type: "venda_avulsa_cozinha",
+        detail: `Pedido avulso com fluxo de cozinha ${item.name} x${qty} criado. Pagamento ${paymentLabel(paymentMethod)}.${isDelivery ? ` Entrega para ${deliveryRecipient} em ${deliveryLocation}.` : ""}`,
+        itemId: item.id
+      });
+
+      state.openComandas.push(saleComanda);
+      appendAudit({
+        actor,
+        type: "venda_avulsa_cozinha",
+        detail: `Comanda ${saleComanda.id} enviada para cozinha (${item.name} x${qty}).`,
+        comandaId: saleComanda.id
+      });
+      if (actor.role === "waiter") {
+        uiState.waiterTab = "abertas";
+        uiState.waiterCollapsedByComanda[saleComanda.id] = false;
+        uiState.waiterActiveComandaId = saleComanda.id;
+      }
+      saveState();
+      render();
+      return;
+    }
+
     const saleComanda = {
       id: `AV-${String(state.seq.sale++).padStart(5, "0")}`,
       table: "Venda Avulsa",
-      customer: "",
+      customer: customer || "",
       createdAt: isoNow(),
       closedAt: isoNow(),
       createdBy: actor.id,
@@ -2135,6 +2839,8 @@
           priceAtSale: Number(product.price),
           costAtSale: Number(product.cost || 0),
           prepTimeAtSale: Number(product.prepTime || 0),
+          requiresKitchen: false,
+          needsKitchen: false,
           waiterNote: note,
           noteType: "",
           createdAt: isoNow(),
@@ -2167,7 +2873,7 @@
         method: paymentMethod,
         methodLabel: paymentLabel(paymentMethod),
         verifiedAt: isoNow(),
-        customerName: "",
+        customerName: customer || "",
         pixCode: ""
       },
       pixCodeDraft: null,
@@ -2198,15 +2904,28 @@
     const productId = Number(form.productId.value || 0);
     const qty = Math.max(1, Number(form.qty.value || 1));
     const waiterNote = form.waiterNote.value.trim();
+    const isDeliveryRaw = Boolean(form.isDelivery?.checked);
+    const deliveryRecipient = String(form.deliveryRecipient?.value || "").trim();
+    const deliveryLocation = String(form.deliveryLocation?.value || "").trim();
 
-    const product = state.products.find((p) => p.id === productId);
+    const product = state.products.find((p) => p.id === productId && p.category === category);
     if (!product) {
       alert("Produto invalido.");
       return;
     }
+    if (product.available === false) {
+      alert(`Produto ${product.name} esta indisponivel no cardapio.`);
+      return;
+    }
+    const needsKitchen = productNeedsKitchen(product);
+    const isDelivery = needsKitchen && isDeliveryRaw;
 
     if (product.stock < qty) {
       alert(`Estoque insuficiente para ${product.name}. Disponivel: ${product.stock}`);
+      return;
+    }
+    if (needsKitchen && isDelivery && (!deliveryRecipient || !deliveryLocation)) {
+      alert("Para entrega, informe quem recebe e o local de entrega.");
       return;
     }
 
@@ -2223,34 +2942,43 @@
       priceAtSale: Number(product.price),
       costAtSale: Number(product.cost || 0),
       prepTimeAtSale: Number(product.prepTime || 0),
+      requiresKitchen: Boolean(product.requiresKitchen),
+      needsKitchen,
       waiterNote,
       noteType: "",
       createdAt: isoNow(),
       delivered: false,
       deliveredAt: null,
-      kitchenStatus: product.category === "Cozinha" ? "fila" : "",
-      kitchenStatusAt: product.category === "Cozinha" ? isoNow() : null,
+      kitchenStatus: needsKitchen ? "fila" : "",
+      kitchenStatusAt: needsKitchen ? isoNow() : null,
       kitchenStatusById: null,
       kitchenStatusByName: "",
-      kitchenAlertUnread: false,
+      kitchenAlertUnread: needsKitchen,
+      deliveryRequested: isDelivery,
+      deliveryRecipient: isDelivery ? deliveryRecipient : "",
+      deliveryLocation: isDelivery ? deliveryLocation : "",
       canceled: false,
       canceledAt: null,
       cancelReason: "",
       cancelNote: ""
     };
 
-    if (item.category === "Cozinha") {
+    if (itemNeedsKitchen(item)) {
       const prepMs = item.prepTimeAtSale * qty * 60 * 1000;
       item.etaAt = new Date(Date.now() + waitingBefore + prepMs).toISOString();
     }
 
     comanda.items.push(item);
+    if (itemNeedsKitchen(item)) {
+      comanda.kitchenAlertUnread = true;
+    }
 
-    const kitchenInfo = item.category === "Cozinha" ? ` Tempo estimado: ${Math.ceil((waitingBefore + item.prepTimeAtSale * qty * 60000) / 60000)} min.` : "";
+    const kitchenInfo = itemNeedsKitchen(item) ? ` Tempo estimado: ${Math.ceil((waitingBefore + item.prepTimeAtSale * qty * 60000) / 60000)} min.` : "";
+    const deliveryInfo = item.deliveryRequested ? ` Entrega para ${item.deliveryRecipient} em ${item.deliveryLocation}.` : "";
     appendComandaEvent(comanda, {
       actor,
       type: "item_add",
-      detail: `Item ${item.name} x${qty} adicionado.${kitchenInfo}`,
+      detail: `Item ${item.name} x${qty} adicionado.${kitchenInfo}${deliveryInfo}`,
       reason: "",
       itemId: item.id
     });
@@ -2268,6 +2996,10 @@
     if (!item || item.canceled) return;
 
     const product = state.products.find((p) => p.id === item.productId);
+    if (product && product.available === false) {
+      alert(`Produto ${product.name} esta indisponivel no cardapio.`);
+      return;
+    }
     if (!product || product.stock < 1) {
       alert("Sem estoque para adicionar mais uma unidade.");
       return;
@@ -2288,6 +3020,50 @@
     render();
   }
 
+  function pickComandaItemByPrompt(comanda, mode = "increment") {
+    const candidates = (comanda.items || []).filter((item) => {
+      if (item.canceled) return false;
+      if (mode === "cancel") return true;
+      return true;
+    });
+    if (!candidates.length) {
+      alert("Nao ha itens validos nessa comanda.");
+      return null;
+    }
+
+    const title = mode === "cancel" ? "Escolha o item para devolucao/cancelamento:" : "Escolha o item para adicionar +1:";
+    const list = candidates
+      .map(
+        (item, idx) =>
+          `${idx + 1} - ${item.name} x${item.qty}${itemNeedsKitchen(item) ? ` [${kitchenStatusLabel(item.kitchenStatus || "fila")}]` : ""}`
+      )
+      .join("\n");
+    const answer = prompt(`${title}\n\n${list}\n\nDigite o numero do item:`, "1");
+    if (answer === null) return null;
+    const index = Number(answer) - 1;
+    if (!Number.isInteger(index) || index < 0 || index >= candidates.length) {
+      alert("Opcao invalida. Informe o numero exibido na lista.");
+      return null;
+    }
+    return candidates[index].id;
+  }
+
+  function incrementItemPicker(comandaId) {
+    const comanda = findOpenComanda(comandaId);
+    if (!comanda) return;
+    const itemId = pickComandaItemByPrompt(comanda, "increment");
+    if (!itemId) return;
+    incrementItem(comandaId, itemId);
+  }
+
+  function cancelItemPicker(comandaId) {
+    const comanda = findOpenComanda(comandaId);
+    if (!comanda) return;
+    const itemId = pickComandaItemByPrompt(comanda, "cancel");
+    if (!itemId) return;
+    cancelItem(comandaId, itemId);
+  }
+
   function setKitchenItemStatus(comandaId, itemId, status) {
     const actor = currentActor();
     if (actor.role !== "cook" && actor.role !== "admin") {
@@ -2297,7 +3073,7 @@
     const comanda = findOpenComanda(comandaId);
     if (!comanda) return;
     const item = (comanda.items || []).find((i) => i.id === itemId);
-    if (!item || item.category !== "Cozinha" || item.canceled) return;
+    if (!item || !itemNeedsKitchen(item) || item.canceled) return;
 
     if (!["cozinhando", "em_falta", "entregue"].includes(status)) return;
     if (status === "entregue" && item.delivered) return;
@@ -2325,7 +3101,10 @@
         qty: item.qty,
         status: status,
         cookId: actor.id,
-        cookName: actor.name
+        cookName: actor.name,
+        deliveryRequested: Boolean(item.deliveryRequested),
+        deliveryRecipient: item.deliveryRecipient || "",
+        deliveryLocation: item.deliveryLocation || ""
       });
     }
 
@@ -2335,6 +3114,26 @@
       detail: `Pedido ${item.name} da comanda ${comanda.id} atualizado para ${kitchenStatusLabel(status)}.`,
       itemId: item.id
     });
+
+    if (status === "entregue" && comanda.isQuickKitchenSale) {
+      const hasPendingKitchenItems = (comanda.items || []).some((i) => itemNeedsKitchen(i) && !i.canceled && !i.delivered);
+      if (!hasPendingKitchenItems) {
+        comanda.status = "finalizada";
+        comanda.closedAt = isoNow();
+        comanda.kitchenAlertUnread = false;
+        appendComandaEvent(comanda, {
+          actor,
+          type: "comanda_finalizada_auto",
+          detail: `Comanda avulsa ${comanda.id} finalizada automaticamente apos entrega da cozinha.`
+        });
+        state.openComandas = state.openComandas.filter((c) => c.id !== comanda.id);
+        state.closedComandas.unshift(comanda);
+        delete uiState.finalizeOpenByComanda[comanda.id];
+        if (uiState.waiterActiveComandaId === comanda.id) {
+          uiState.waiterActiveComandaId = null;
+        }
+      }
+    }
 
     saveState();
     render();
@@ -2347,7 +3146,7 @@
 
     const item = (comanda.items || []).find((i) => i.id === itemId);
     if (!item || item.delivered || item.canceled) return;
-    if (item.category === "Cozinha") {
+    if (itemNeedsKitchen(item)) {
       setKitchenItemStatus(comandaId, itemId, "entregue");
       return;
     }
@@ -2499,6 +3298,9 @@
     state.openComandas = state.openComandas.filter((c) => c.id !== comanda.id);
     state.closedComandas.unshift(comanda);
 
+    if (uiState.waiterActiveComandaId === comanda.id) {
+      uiState.waiterActiveComandaId = null;
+    }
     delete uiState.finalizeOpenByComanda[comanda.id];
 
     saveState();
@@ -2556,13 +3358,11 @@
             h3 { margin: 0 0 8px; }
             p { margin: 4px 0; }
             hr { border: none; border-top: 1px dashed #000; margin: 8px 0; }
-            img { width: 120px; display: block; margin: 0 auto 8px; filter: grayscale(1) contrast(1.15); }
             .center { text-align: center; }
           </style>
         </head>
         <body>
           <div class="receipt">
-            <img src="${BRAND_LOGO}" alt="Logo" />
             <p class="center"><b>${esc(ESTABLISHMENT_NAME)}</b></p>
             <h3>Comanda ${esc(comanda.id)}</h3>
             <p>Mesa: ${esc(comanda.table)}</p>
@@ -2696,11 +3496,18 @@
     saveState();
     render();
   }
-  app.addEventListener("click", async (event) => {
-    const button = event.target.closest("[data-action]");
-    if (!button) return;
 
-    const action = button.dataset.action;
+  function reportUiRuntimeError(context, err) {
+    console.error(`[ui:${context}]`, err);
+    alert("Ocorreu um erro ao processar a acao. A tela foi recarregada.");
+  }
+
+  app.addEventListener("click", async (event) => {
+    try {
+      const button = event.target.closest("[data-action]");
+      if (!button) return;
+
+      const action = button.dataset.action;
 
     if (action === "logout") {
       logout();
@@ -2729,6 +3536,11 @@
 
     if (action === "edit-product") {
       editProduct(Number(button.dataset.id));
+      return;
+    }
+
+    if (action === "toggle-product-availability") {
+      toggleProductAvailability(Number(button.dataset.id));
       return;
     }
 
@@ -2777,13 +3589,28 @@
       return;
     }
 
+    if (action === "increment-item-picker") {
+      incrementItemPicker(button.dataset.comandaId);
+      return;
+    }
+
+    if (action === "cancel-item-picker") {
+      cancelItemPicker(button.dataset.comandaId);
+      return;
+    }
+
     if (action === "add-comanda-note") {
       addComandaNote(button.dataset.comandaId);
       return;
     }
 
-    if (action === "open-comanda-alert") {
-      clearComandaKitchenAlerts(button.dataset.comandaId);
+    if (action === "toggle-comanda-collapse") {
+      toggleWaiterComandaCollapse(button.dataset.comandaId);
+      return;
+    }
+
+    if (action === "resolve-kitchen-indicator") {
+      resolveComandaKitchenIndicator(button.dataset.comandaId, button.dataset.mode || "entendi");
       return;
     }
 
@@ -2803,115 +3630,199 @@
       return;
     }
 
-    if (action === "close-comanda-details") {
-      uiState.comandaDetailsId = null;
+      if (action === "close-comanda-details") {
+        uiState.comandaDetailsId = null;
+        render();
+        return;
+      }
+    } catch (err) {
+      reportUiRuntimeError("click", err);
       render();
-      return;
     }
   });
 
   app.addEventListener("submit", (event) => {
-    event.preventDefault();
+    try {
+      event.preventDefault();
 
-    const form = event.target;
+      const form = event.target;
 
-    if (form.id === "login-form") {
-      login(form.login.value.trim(), form.password.value);
-      return;
-    }
+      if (form.id === "login-form") {
+        login(form.login.value.trim(), form.password.value);
+        return;
+      }
 
-    if (form.id === "add-product-form") {
-      createProduct(form);
-      return;
-    }
+      if (form.id === "add-product-form") {
+        createProduct(form);
+        return;
+      }
 
-    if (form.id === "add-employee-form") {
-      createEmployee(form);
-      return;
-    }
+      if (form.id === "add-employee-form") {
+        createEmployee(form);
+        return;
+      }
 
-    if (form.id === "finance-inventory-form") {
-      saveFinanceInventory(form);
-      return;
-    }
+      if (form.id === "finance-inventory-form") {
+        saveFinanceInventory(form);
+        return;
+      }
 
-    if (form.id === "create-comanda-form") {
-      createComanda(form);
-      return;
-    }
+      if (form.id === "create-comanda-form") {
+        createComanda(form);
+        return;
+      }
 
-    if (form.id === "quick-sale-form") {
-      createQuickSale(form);
-      return;
-    }
+      if (form.id === "quick-sale-form") {
+        createQuickSale(form);
+        return;
+      }
 
-    if (form.matches('form[data-role="add-item-form"]')) {
-      addItemToComanda(form);
-      return;
-    }
+      if (form.matches('form[data-role="add-item-form"]')) {
+        addItemToComanda(form);
+        return;
+      }
 
-    if (form.matches('form[data-role="finalize-form"]')) {
-      finalizeComanda(form);
-      return;
-    }
+      if (form.matches('form[data-role="finalize-form"]')) {
+        finalizeComanda(form);
+        return;
+      }
 
-    if (form.id === "close-cash-form") {
-      closeCash(form);
+      if (form.id === "close-cash-form") {
+        closeCash(form);
+      }
+    } catch (err) {
+      reportUiRuntimeError("submit", err);
+      render();
     }
   });
 
   app.addEventListener("change", (event) => {
-    const target = event.target;
+    try {
+      const target = event.target;
 
-    if (target.matches('[data-role="item-category"]')) {
-      const form = target.closest('form[data-role="add-item-form"]');
-      const productSel = form.querySelector('[data-role="item-product"]');
-      fillProductSelect(productSel, target.value);
-      updateKitchenEstimate(form);
-      return;
-    }
-
-    if (target.matches('[data-role="item-product"]') || target.name === "qty") {
-      const form = target.closest('form[data-role="add-item-form"]');
-      if (form) {
+      if (target.matches('[data-role="item-category"]')) {
+        const form = target.closest('form[data-role="add-item-form"]');
+        if (!form) return;
+        const productSel = form.querySelector('[data-role="item-product"]');
+        fillProductSelect(productSel, target.value);
         updateKitchenEstimate(form);
+        updateDeliveryFields(form);
+        return;
       }
-      return;
-    }
 
-    if (target.matches('[data-role="quick-category"]')) {
-      const form = target.closest('form[data-role="quick-sale-form"]');
-      if (form) fillQuickSaleProductSelect(form);
-      return;
-    }
+      if (target.matches('[data-role="item-product"]') || target.name === "qty") {
+        const form = target.closest('form[data-role="add-item-form"]');
+        if (form) {
+          updateKitchenEstimate(form);
+          if (target.matches('[data-role="item-product"]')) {
+            updateDeliveryFields(form);
+          }
+        }
+        return;
+      }
 
-    if (target.matches('[data-role="payment-method"]')) {
-      toggleFinalizeView(target);
-      return;
-    }
+      if (target.matches('[data-role="delivery-check"]')) {
+        const form = target.closest('form[data-role="add-item-form"]');
+        if (form) updateDeliveryFields(form);
+        return;
+      }
 
-    if (target.matches('[data-role="monitor-filter"]')) {
-      uiState.monitorWaiterId = target.value || "all";
+      if (target.matches('[data-role="quick-category"]')) {
+        const form = target.closest('form[data-role="quick-sale-form"]');
+        if (form) {
+          fillQuickSaleProductSelect(form);
+          updateQuickSaleFlow(form);
+        }
+        return;
+      }
+
+      if (target.matches('[data-role="quick-product"]')) {
+        const form = target.closest('form[data-role="quick-sale-form"]');
+        if (form) updateQuickSaleFlow(form);
+        return;
+      }
+
+      if (target.matches('[data-role="quick-delivery-check"]')) {
+        const form = target.closest('form[data-role="quick-sale-form"]');
+        if (form) updateQuickSaleFlow(form);
+        return;
+      }
+
+      if (target.matches('[data-role="payment-method"]')) {
+        toggleFinalizeView(target);
+        return;
+      }
+
+      if (target.name === "category" && target.closest("#add-product-form")) {
+        updateAdminProductSubmenu(target.closest("#add-product-form"));
+        return;
+      }
+
+      if (target.matches('[data-role="monitor-filter"]')) {
+        uiState.monitorWaiterId = target.value || "all";
+        render();
+        return;
+      }
+
+      if (target.matches('[data-role="waiter-search"]')) {
+        uiState.waiterComandaSearch = target.value || "";
+        render();
+        return;
+      }
+
+      if (target.matches('[data-role="waiter-catalog-search"]')) {
+        uiState.waiterCatalogSearch = target.value || "";
+        render();
+        return;
+      }
+
+      if (target.matches('[data-role="waiter-catalog-category"]')) {
+        uiState.waiterCatalogCategory = target.value || "all";
+        render();
+        return;
+      }
+
+      if (target.matches('[data-role="admin-search"]')) {
+        uiState.adminComandaSearch = target.value || "";
+        render();
+        return;
+      }
+
+      if (target.matches('[data-role="cook-search"]')) {
+        uiState.cookSearch = target.value || "";
+        render();
+      }
+    } catch (err) {
+      reportUiRuntimeError("change", err);
       render();
-      return;
     }
+  });
 
-    if (target.matches('[data-role="waiter-search"]')) {
-      uiState.waiterComandaSearch = target.value || "";
-      render();
-      return;
-    }
-
-    if (target.matches('[data-role="admin-search"]')) {
-      uiState.adminComandaSearch = target.value || "";
-      render();
-      return;
-    }
-
-    if (target.matches('[data-role="cook-search"]')) {
-      uiState.cookSearch = target.value || "";
+  app.addEventListener("input", (event) => {
+    try {
+      const target = event.target;
+      if (target.matches('[data-role="waiter-catalog-search"]')) {
+        uiState.waiterCatalogSearch = target.value || "";
+        render();
+      }
+    } catch (err) {
+      reportUiRuntimeError("input", err);
       render();
     }
+  });
+
+  window.addEventListener("storage", (event) => {
+    if (event.key !== STORAGE_KEY || !event.newValue) return;
+    try {
+      const incoming = JSON.parse(event.newValue);
+      const localUpdated = new Date(state.meta?.updatedAt || 0).getTime();
+      const incomingUpdated = new Date(incoming?.meta?.updatedAt || 0).getTime();
+      if (Number.isFinite(localUpdated) && Number.isFinite(incomingUpdated) && incomingUpdated < localUpdated) {
+        return;
+      }
+      adoptIncomingState(incoming);
+      render();
+    } catch (_err) {}
   });
 
   window.addEventListener("beforeinstallprompt", (event) => {
