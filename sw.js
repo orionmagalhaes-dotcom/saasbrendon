@@ -1,4 +1,4 @@
-const CACHE_NAME = "restobar-cache-v3";
+const CACHE_NAME = "restobar-cache-v4";
 const ASSETS = [
   "./",
   "./index.html",
@@ -12,6 +12,37 @@ const ASSETS = [
   "./brand-logo.png",
   "./brand-login.png"
 ];
+const STATIC_EXTENSIONS = [".html", ".css", ".js", ".webmanifest", ".svg", ".png", ".jpg", ".jpeg", ".ico"];
+const API_PATH_PREFIXES = ["/rest/v1/", "/auth/v1/", "/realtime/v1/", "/storage/v1/"];
+const ASSET_PATHS = new Set(ASSETS.map((asset) => new URL(asset, self.location.origin).pathname));
+
+function isCacheableStaticRequest(request) {
+  if (!request || request.method !== "GET") return false;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return false;
+  if (API_PATH_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return false;
+  if (url.pathname === "/" || ASSET_PATHS.has(url.pathname)) return true;
+  return STATIC_EXTENSIONS.some((ext) => url.pathname.endsWith(ext));
+}
+
+async function cacheFirstStatic(request) {
+  const cached = await caches.match(request);
+  if (cached) return cached;
+
+  try {
+    const response = await fetch(request);
+    if (response && response.ok) {
+      const cache = await caches.open(CACHE_NAME);
+      await cache.put(request, response.clone());
+    }
+    return response;
+  } catch (_err) {
+    if (request.destination === "document") {
+      return (await caches.match("./index.html")) || Response.error();
+    }
+    return new Response("Offline", { status: 503, statusText: "Offline" });
+  }
+}
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)));
@@ -26,18 +57,11 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) {
-        return cached;
-      }
-      return fetch(event.request)
-        .then((resp) => {
-          const respClone = resp.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, respClone));
-          return resp;
-        })
-        .catch(() => caches.match("./index.html"));
-    })
-  );
+  const request = event.request;
+  if (request.mode === "navigate") {
+    event.respondWith(fetch(request).catch(() => caches.match("./index.html")));
+    return;
+  }
+  if (!isCacheableStaticRequest(request)) return;
+  event.respondWith(cacheFirstStatic(request));
 });

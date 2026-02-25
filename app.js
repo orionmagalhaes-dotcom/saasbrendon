@@ -13,6 +13,11 @@
     { value: "em_falta", label: "Em falta" },
     { value: "entregue", label: "Entregue" }
   ];
+  const KITCHEN_PRIORITIES = [
+    { value: "normal", label: "Normal" },
+    { value: "alta", label: "Prioridade alta" },
+    { value: "maxima", label: "Prioridade maxima" }
+  ];
   const PAYMENT_METHODS = [
     { value: "dinheiro", label: "Dinheiro" },
     { value: "maquineta_debito", label: "Maquineta/Debito" },
@@ -50,6 +55,7 @@
     waiterCatalogSearch: "",
     waiterCatalogCategory: "all",
     adminComandaSearch: "",
+    adminKitchenSearch: "",
     cookSearch: "",
     supabaseStatus: "desconectado",
     supabaseLastError: "",
@@ -57,6 +63,7 @@
     waiterReadyModalItems: [],
     waiterReadySeenMap: {},
     waiterDraftByComanda: {},
+    persistedDetailsOpen: {},
     itemSelector: {
       open: false,
       comandaId: "",
@@ -77,6 +84,19 @@
     return new Date(value).toLocaleString("pt-BR");
   }
 
+  function formatDateTimeWithDay(value) {
+    if (!value) return "-";
+    return new Date(value).toLocaleString("pt-BR", {
+      weekday: "long",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    });
+  }
+
   function money(value) {
     return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(value || 0));
   }
@@ -88,6 +108,31 @@
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;")
       .replaceAll("'", "&#039;");
+  }
+
+  function detailKeyPart(value) {
+    return String(value ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+  }
+
+  function detailKey(...parts) {
+    const key = parts.map((part) => detailKeyPart(part)).filter(Boolean).join(":");
+    return key || "";
+  }
+
+  function isDetailOpen(key, defaultOpen = false) {
+    if (!key) return defaultOpen;
+    if (Object.prototype.hasOwnProperty.call(uiState.persistedDetailsOpen, key)) {
+      return Boolean(uiState.persistedDetailsOpen[key]);
+    }
+    return defaultOpen;
+  }
+
+  function detailOpenAttr(key, defaultOpen = false) {
+    return isDetailOpen(key, defaultOpen) ? " open" : "";
   }
 
   function parseNumber(input) {
@@ -225,6 +270,8 @@
   function normalizeComandaItem(item, fallbackId = 0) {
     const category = normalizeCategoryName(item.category);
     const requiresKitchen = category === "Cozinha" ? true : category === "Ofertas" ? Boolean(item.requiresKitchen) : false;
+    const needsKitchen = item.needsKitchen !== undefined ? Boolean(item.needsKitchen) : requiresKitchen;
+    const kitchenPriority = needsKitchen ? String(item.kitchenPriority || "normal") : "";
     const visualState =
       item.waiterVisualState === "new" || item.waiterVisualState === "ready"
         ? item.waiterVisualState
@@ -236,7 +283,11 @@
       id: item.id || `IT-NORM-${fallbackId}`,
       category,
       requiresKitchen,
-      needsKitchen: item.needsKitchen !== undefined ? Boolean(item.needsKitchen) : requiresKitchen,
+      needsKitchen,
+      kitchenPriority: needsKitchen && ["normal", "alta", "maxima"].includes(kitchenPriority) ? kitchenPriority : needsKitchen ? "normal" : "",
+      kitchenPriorityById: item.kitchenPriorityById || null,
+      kitchenPriorityByName: item.kitchenPriorityByName || "",
+      kitchenPriorityAt: item.kitchenPriorityAt || null,
       kitchenAlertUnread: Boolean(item.kitchenAlertUnread),
       waiterVisualState: visualState,
       waiterVisualUpdatedAt: item.waiterVisualUpdatedAt || null
@@ -355,7 +406,10 @@
     channel: null,
     connected: false,
     syncTimer: null,
-    syncInFlight: false
+    syncInFlight: false,
+    syncQueued: false,
+    reconnectTimer: null,
+    reconnectAttempts: 0
   };
 
   function adoptIncomingState(source) {
@@ -409,24 +463,47 @@
   }
 
   function scheduleSupabaseSync() {
+    supabaseCtx.syncQueued = true;
     if (supabaseCtx.syncTimer) {
       clearTimeout(supabaseCtx.syncTimer);
     }
     supabaseCtx.syncTimer = setTimeout(() => {
+      supabaseCtx.syncTimer = null;
       void syncStateToSupabase();
     }, 400);
   }
 
+  function clearSupabaseReconnectTimer() {
+    if (!supabaseCtx.reconnectTimer) return;
+    clearTimeout(supabaseCtx.reconnectTimer);
+    supabaseCtx.reconnectTimer = null;
+  }
+
+  function scheduleSupabaseReconnect(delayMs = 2000) {
+    if (supabaseCtx.reconnectTimer) return;
+    supabaseCtx.reconnectTimer = setTimeout(() => {
+      supabaseCtx.reconnectTimer = null;
+      void connectSupabase();
+    }, Math.max(1000, Number(delayMs || 2000)));
+  }
+
   async function syncStateToSupabase() {
     const client = getSupabaseClient();
-    if (!client || supabaseCtx.syncInFlight) return;
+    if (!client) return;
+    if (supabaseCtx.syncInFlight) {
+      supabaseCtx.syncQueued = true;
+      return;
+    }
+    if (!supabaseCtx.syncQueued) return;
 
     supabaseCtx.syncInFlight = true;
+    supabaseCtx.syncQueued = false;
+    const sanitized = sanitizeStateForCloud(state);
     try {
       const payload = {
         id: "main",
         updated_at: isoNow(),
-        payload: sanitizeStateForCloud(state)
+        payload: sanitized
       };
       const { error } = await client.from("restobar_state").upsert(payload);
       if (error) {
@@ -436,9 +513,19 @@
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       setSupabaseStatus("conectado");
     } catch (err) {
+      supabaseCtx.syncQueued = true;
       setSupabaseStatus("aviso", String(err?.message || err || "Falha ao sincronizar."));
     } finally {
       supabaseCtx.syncInFlight = false;
+      if (supabaseCtx.syncQueued) {
+        if (supabaseCtx.syncTimer) {
+          clearTimeout(supabaseCtx.syncTimer);
+        }
+        supabaseCtx.syncTimer = setTimeout(() => {
+          supabaseCtx.syncTimer = null;
+          void syncStateToSupabase();
+        }, 120);
+      }
     }
   }
 
@@ -489,6 +576,7 @@
     const client = getSupabaseClient();
     if (!client) return;
 
+    clearSupabaseReconnectTimer();
     setSupabaseStatus("conectando");
     if (supabaseCtx.channel) {
       try {
@@ -514,9 +602,13 @@
     channel.subscribe((status) => {
       if (status === "SUBSCRIBED") {
         supabaseCtx.connected = true;
+        supabaseCtx.reconnectAttempts = 0;
+        clearSupabaseReconnectTimer();
         setSupabaseStatus("conectado");
       } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
         supabaseCtx.connected = false;
+        supabaseCtx.reconnectAttempts = Math.min(supabaseCtx.reconnectAttempts + 1, 6);
+        scheduleSupabaseReconnect(1000 * 2 ** (supabaseCtx.reconnectAttempts - 1));
         setSupabaseStatus("aviso", `Realtime: ${status}`);
       }
     });
@@ -606,7 +698,7 @@
         }
       }
     }
-    rows.sort((a, b) => new Date(a.item.createdAt) - new Date(b.item.createdAt));
+    rows.sort(kitchenSortRows);
     return rows;
   }
 
@@ -642,6 +734,29 @@
     return "";
   }
 
+  function kitchenPriorityLabel(priority) {
+    return KITCHEN_PRIORITIES.find((entry) => entry.value === priority)?.label || "Normal";
+  }
+
+  function kitchenPriorityClass(priority) {
+    if (priority === "maxima") return "max";
+    if (priority === "alta") return "high";
+    return "normal";
+  }
+
+  function kitchenPriorityWeight(priority) {
+    if (priority === "maxima") return 3;
+    if (priority === "alta") return 2;
+    return 1;
+  }
+
+  function kitchenSortRows(a, b) {
+    const pa = kitchenPriorityWeight(a?.item?.kitchenPriority || "normal");
+    const pb = kitchenPriorityWeight(b?.item?.kitchenPriority || "normal");
+    if (pa !== pb) return pb - pa;
+    return new Date(a?.item?.createdAt || 0) - new Date(b?.item?.createdAt || 0);
+  }
+
   function eventTypeLabel(type) {
     const labels = {
       comanda_aberta: "Comanda aberta",
@@ -651,6 +766,7 @@
       item_reduzido: "Item reduzido",
       item_entregue: "Item entregue",
       cozinha_status: "Atualizacao da cozinha",
+      cozinha_prioridade: "Prioridade da cozinha",
       comanda_obs: "Observacao adicionada",
       comanda_finalizada: "Comanda finalizada",
       comanda_finalizada_auto: "Finalizacao automatica",
@@ -918,6 +1034,7 @@
         <div class="card">
           <h3>Atalhos</h3>
           <div class="actions" style="margin-top:0.75rem;">
+            <button class="btn secondary" data-action="set-tab" data-role="admin" data-tab="comandas">Comandas (modo garcom)</button>
             <button class="btn secondary" data-action="set-tab" data-role="admin" data-tab="produtos">Gerenciar Produtos</button>
             <button class="btn secondary" data-action="set-tab" data-role="admin" data-tab="funcionarios">Funcionarios</button>
             <button class="btn secondary" data-action="set-tab" data-role="admin" data-tab="avulsa">Venda Avulsa</button>
@@ -979,8 +1096,9 @@
     if (category === "Bar") {
       const doses = products.filter((p) => (p.subcategory || "Geral") === "Doses/Copo");
       const gerais = products.filter((p) => (p.subcategory || "Geral") !== "Doses/Copo");
+      const barDetailsKey = detailKey("admin-products", "bar");
       return `
-        <details class="compact-details" open>
+        <details class="compact-details" data-persist-key="${esc(barDetailsKey)}" data-persist-default-open="true"${detailOpenAttr(barDetailsKey, true)}>
           <summary><b>Bar (Bebidas)</b> | Subcategoria: Doses/Copo</summary>
           <div style="margin-top:0.55rem;">
             <h4 style="margin:0;">Doses/Copo</h4>
@@ -1380,7 +1498,13 @@
       .map(
         (item) =>
           `<tr><td>${esc(item.name)}</td><td>${item.qty}</td><td>${money(item.priceAtSale)}</td><td>${
-            itemNeedsKitchen(item) && !item.canceled ? esc(kitchenStatusLabel(item.kitchenStatus || "fila")) : item.canceled ? "Cancelado" : item.delivered ? "Entregue" : "Pendente"
+            itemNeedsKitchen(item) && !item.canceled
+              ? `${esc(kitchenStatusLabel(item.kitchenStatus || "fila"))} | ${esc(kitchenPriorityLabel(item.kitchenPriority || "normal"))}`
+              : item.canceled
+                ? "Cancelado"
+                : item.delivered
+                  ? "Entregue"
+                  : "Pendente"
           }</td><td>${esc(item.waiterNote || "-")}${item.deliveryRequested ? ` | Entrega: ${esc(item.deliveryRecipient || "-")} @ ${esc(item.deliveryLocation || "-")}` : ""}</td></tr>`
       )
       .join("");
@@ -1423,6 +1547,7 @@
   function renderComandaRecordsCompact(commandas, options = {}) {
     const limit = Number(options.limit || 60);
     const title = options.title || "Registros por Comanda";
+    const keyPrefix = detailKey("comanda-records", options.keyPrefix || title);
     if (!commandas.length) {
       return `
         <div class="card">
@@ -1443,8 +1568,9 @@
           .map((comanda) => {
             const validItems = (comanda.items || []).filter((i) => !i.canceled).length;
             const events = (comanda.events || []).slice(-20).reverse();
+            const comandaDetailKey = detailKey(keyPrefix, comanda.id);
             return `
-              <details class="compact-details" style="margin-top:0.65rem;">
+              <details class="compact-details" data-persist-key="${esc(comandaDetailKey)}" style="margin-top:0.65rem;"${detailOpenAttr(comandaDetailKey)}>
                 <summary>
                   <b>${esc(comanda.id)}</b> | ${esc(comanda.status || "aberta")} | Mesa: ${esc(comanda.table || "-")} | Cliente: ${esc(comanda.customer || "-")} | Itens: ${validItems} | Total: ${money(comandaTotal(comanda))}
                 </summary>
@@ -1477,13 +1603,14 @@
     const compactHistoryComandas = [...state.closedComandas, ...closureComandas].sort(
       (a, b) => new Date(comandaUpdatedAt(b) || 0) - new Date(comandaUpdatedAt(a) || 0)
     );
+    const auditDetailsKey = detailKey("admin-history", "audit-day");
 
     return `
       <div class="grid cols-2">
         <div class="card">
           <h3>Historico Imutavel (Dia Atual)</h3>
           <p class="note">Alteracoes de funcionarios e admin registradas para conferencia.</p>
-          <details class="compact-details" style="margin-top:0.75rem;">
+          <details class="compact-details" data-persist-key="${esc(auditDetailsKey)}" style="margin-top:0.75rem;"${detailOpenAttr(auditDetailsKey)}>
             <summary>Ver alteracoes do dia (${currentAudit.length})</summary>
             ${currentAudit.length
               ? `<div class="table-wrap" style="margin-top:0.55rem;"><table class="history-table"><thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th><th>Abrir</th></tr></thead><tbody>${currentAudit
@@ -1498,7 +1625,11 @@
           </details>
           ${renderComandaDetailsBox()}
         </div>
-        ${renderComandaRecordsCompact(compactHistoryComandas, { title: "Comandas no Historico (minimizadas)", limit: 220 })}
+        ${renderComandaRecordsCompact(compactHistoryComandas, {
+          title: "Comandas no Historico (minimizadas)",
+          limit: 220,
+          keyPrefix: "admin-history-comandas"
+        })}
       </div>
       <div class="card" style="margin-top:0.75rem;">
         <h3>Fechamentos de Caixa (90 dias)</h3>
@@ -1506,7 +1637,8 @@
           ? closures
               .map((h) => {
                 const summary = h.summary || buildCashSummary(h.commandas || []);
-                return `<details class="compact-details" style="margin-top:0.65rem;"><summary><b>${esc(h.id)}</b> | Fechado em ${formatDateTime(h.closedAt)} | ${summary.commandasCount} comandas | ${money(summary.total)}</summary><div class="table-wrap" style="margin-top:0.6rem;"><table><thead><tr><th>Comanda</th><th>Status</th><th>Total</th><th>Cliente</th><th>Abrir</th></tr></thead><tbody>${(h.commandas || [])
+                const closureDetailsKey = detailKey("admin-history", "cash-closure", h.id);
+                return `<details class="compact-details" data-persist-key="${esc(closureDetailsKey)}" style="margin-top:0.65rem;"${detailOpenAttr(closureDetailsKey)}><summary><b>${esc(h.id)}</b> | Aberto: ${formatDateTimeWithDay(h.openedAt)} | Fechado: ${formatDateTimeWithDay(h.closedAt)} | ${summary.commandasCount} comandas | ${money(summary.total)}</summary><div class="table-wrap" style="margin-top:0.6rem;"><table><thead><tr><th>Comanda</th><th>Status</th><th>Total</th><th>Cliente</th><th>Abrir</th></tr></thead><tbody>${(h.commandas || [])
                   .map(
                     (c) =>
                       `<tr><td>${esc(c.id)}</td><td>${esc(c.status)}</td><td>${money(comandaTotal(c))}</td><td>${esc(c.customer || "-")}</td><td><button class="btn secondary" data-action="open-comanda-details" data-comanda-id="${c.id}">Ver</button></td></tr>`
@@ -1520,7 +1652,7 @@
   }
 
   function renderAdminCash() {
-    const openInfo = `Caixa ${state.cash.id} aberto em ${formatDateTime(state.cash.openedAt)}`;
+    const openInfo = `Caixa ${state.cash.id} aberto em ${formatDateTimeWithDay(state.cash.openedAt)}`;
     return `
       <div class="grid cols-2">
         <div class="card">
@@ -1570,8 +1702,15 @@
       })
       .filter((comanda) => matchesComandaSearch(comanda, uiState.adminComandaSearch))
       .sort((a, b) => new Date(comandaUpdatedAt(b) || 0) - new Date(comandaUpdatedAt(a) || 0));
+    const kitchenRows = listActiveKitchenOrders()
+      .filter((row) => matchesKitchenCollaborator(row, selected))
+      .filter((row) => matchesKitchenRowSearch(row, uiState.adminKitchenSearch));
+    const kitchenFila = kitchenRows.filter((row) => (row.item.kitchenStatus || "fila") === "fila").length;
+    const kitchenCooking = kitchenRows.filter((row) => (row.item.kitchenStatus || "fila") === "cozinhando").length;
+    const kitchenMissing = kitchenRows.filter((row) => (row.item.kitchenStatus || "fila") === "em_falta").length;
     const opened = monitorComandas.filter((c) => c.status !== "finalizada");
     const finalized = monitorComandas.filter((c) => c.status === "finalizada");
+    const monitorEventsDetailsKey = detailKey("admin-monitor", "events");
 
     return `
       <div class="grid cols-2">
@@ -1595,6 +1734,20 @@
             <div class="kpi"><p>Em andamento</p><b>${opened.length}</b></div>
             <div class="kpi"><p>Finalizadas</p><b>${finalized.length}</b></div>
           </div>
+          <div class="kitchen-monitor-panel" style="margin-top:0.8rem;">
+            <h4>Painel da Cozinha (acao em tempo real)</h4>
+            <p class="note" style="margin-top:0.25rem;">Administrador acompanha itens da cozinha com dados do garcom, define prioridade (normal/alta/maxima) e atualiza status para Cozinhando, Em falta ou Entregue.</p>
+            <div class="field" style="margin-top:0.55rem;">
+              <label>Busca da cozinha</label>
+              <input data-role="admin-kitchen-search" value="${esc(uiState.adminKitchenSearch)}" placeholder="Comanda, mesa, cliente, item, observacao ou garcom" />
+            </div>
+            <div class="kpis kitchen-inline-kpis" style="margin-top:0.55rem;">
+              <div class="kpi"><p>Fila</p><b>${kitchenFila}</b></div>
+              <div class="kpi"><p>Cozinhando</p><b>${kitchenCooking}</b></div>
+              <div class="kpi"><p>Em falta</p><b>${kitchenMissing}</b></div>
+            </div>
+            ${renderKitchenOpsBoard(kitchenRows, { emptyMessage: "Sem pedidos ativos na cozinha para o filtro aplicado." })}
+          </div>
           ${monitorComandas.length
             ? `<div class="table-wrap monitor-table-wrap" style="margin-top:0.75rem;"><table class="monitor-table"><thead><tr><th>Comanda</th><th>Local</th><th>Cliente</th><th>Situacao</th><th>Atualizacao</th><th>Total</th><th>Acoes</th></tr></thead><tbody>${monitorComandas
                 .map((c) => {
@@ -1603,7 +1756,7 @@
                 })
                 .join("")}</tbody></table></div>`
             : `<div class="empty" style="margin-top:0.75rem;">Sem comandas para o filtro escolhido.</div>`}
-          <details class="compact-details" style="margin-top:0.75rem;">
+          <details class="compact-details" data-persist-key="${esc(monitorEventsDetailsKey)}" style="margin-top:0.75rem;"${detailOpenAttr(monitorEventsDetailsKey)}>
             <summary>Historico de alteracoes (oculto)</summary>
             ${filteredEvents.length
               ? `<div class="table-wrap" style="margin-top:0.65rem;"><table class="history-table"><thead><tr><th>Data</th><th>Funcionario</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th></tr></thead><tbody>${filteredEvents
@@ -1617,14 +1770,63 @@
           </details>
           ${renderComandaDetailsBox()}
         </div>
-        ${renderComandaRecordsCompact(monitorComandas, { title: "Registros por Comanda (Minimizados)", limit: 70 })}
+        ${renderComandaRecordsCompact(monitorComandas, {
+          title: "Registros por Comanda (Minimizados)",
+          limit: 70,
+          keyPrefix: "admin-monitor-comandas"
+        })}
       </div>
+    `;
+  }
+
+  function renderAdminComandas() {
+    const tabs = [
+      { key: "abrir", label: "Abrir pedido/comanda" },
+      { key: "abertas", label: "Comandas abertas" },
+      { key: "cozinha", label: "Fila cozinha" },
+      { key: "consulta", label: "Consulta precos" },
+      { key: "avulsa", label: "Venda Avulsa" },
+      { key: "historico", label: "Historico" }
+    ];
+
+    let content = "";
+    switch (uiState.waiterTab) {
+      case "abrir":
+        content = renderWaiterCreateComanda();
+        break;
+      case "abertas":
+        content = renderWaiterOpenComandas();
+        break;
+      case "avulsa":
+        content = renderQuickSale("admin");
+        break;
+      case "cozinha":
+        content = renderWaiterKitchen();
+        break;
+      case "consulta":
+        content = renderWaiterCatalog();
+        break;
+      case "historico":
+        content = renderWaiterHistory();
+        break;
+      default:
+        content = renderWaiterCreateComanda();
+    }
+
+    return `
+      <div class="card">
+        <h3>Comandas (modo garcom)</h3>
+        <p class="note">Administrador pode abrir e operar comandas com o mesmo fluxo do garcom.</p>
+      </div>
+      ${renderTabs("waiter", tabs, uiState.waiterTab)}
+      ${content}
     `;
   }
 
   function renderAdmin(user) {
     const tabs = [
       { key: "dashboard", label: "Dashboard" },
+      { key: "comandas", label: "Comandas" },
       { key: "produtos", label: "Produtos" },
       { key: "funcionarios", label: "Funcionarios" },
       { key: "avulsa", label: "Venda Avulsa" },
@@ -1637,6 +1839,9 @@
 
     let content = "";
     switch (uiState.adminTab) {
+      case "comandas":
+        content = renderAdminComandas();
+        break;
       case "produtos":
         content = renderAdminProducts();
         break;
@@ -1671,6 +1876,7 @@
         ${renderTopBar(user)}
         ${renderTabs("admin", tabs, uiState.adminTab)}
         ${content}
+        ${renderComandaItemSelectorModal()}
       </div>
     `;
   }
@@ -1720,6 +1926,9 @@
             ? `<div class="card">
           <h3>Comanda ativa agora: ${esc(activeComanda.id)}</h3>
           <p class="note">Adicione pedidos, acompanhe a cozinha e finalize quando necessario.</p>
+          <div class="actions" style="margin-top:0.55rem;">
+            <button class="btn secondary compact-action" data-action="minimize-open-comanda" data-comanda-id="${activeComanda.id}">Minimizar pedido aberto</button>
+          </div>
           <div style="margin-top:0.75rem;">${renderComandaCard(activeComanda, { forceExpanded: true })}</div>
         </div>`
             : `<div class="card">
@@ -1821,6 +2030,7 @@
       const remMin = Math.ceil(kitchenRemainingMs(item) / 60000);
       flags.push(`<span class="tag">Fila cozinha ~${remMin} min</span>`);
       flags.push(`<span class="tag">Status: ${esc(kitchenStatusLabel(item.kitchenStatus || "fila"))}</span>`);
+      flags.push(`<span class="tag">Prioridade: ${esc(kitchenPriorityLabel(item.kitchenPriority || "normal"))}</span>`);
       if (item.kitchenStatusByName) {
         flags.push(`<span class="tag">${esc(item.kitchenStatusByName)}</span>`);
       }
@@ -1968,9 +2178,9 @@
                   .join("")}</div></div>`
               : `<div class="note">Nenhum item selecionado para envio em lote.</div>`
           }
-          <div class="actions">
-            <button class="btn secondary" type="button" data-action="queue-draft-item" data-comanda-id="${comanda.id}">Selecionar item para lista</button>
-            <button class="btn primary" type="submit">${draftItems.length ? "Adicionar todos os itens selecionados" : "Adicionar item atual"}</button>
+          <div class="actions draft-actions">
+            <button class="btn secondary compact-action" type="button" data-action="queue-draft-item" data-comanda-id="${comanda.id}">Selecionar</button>
+            <button class="btn primary compact-action" type="submit">${draftItems.length ? "Adicionar lote" : "Adicionar"}</button>
           </div>
         </form>
         `
@@ -2060,10 +2270,10 @@
           <h3>Fila de Espera - Cozinha</h3>
           <p class="note">Tempo medio atual: <b>${avg} min</b></p>
           ${queue.length
-            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="responsive-stack waiter-kitchen-table"><thead><tr><th>Comanda</th><th>Produto</th><th>Qtd</th><th>Status Cozinha</th><th>Tempo restante</th><th>Mesa/ref</th></tr></thead><tbody>${queue
+            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="responsive-stack waiter-kitchen-table"><thead><tr><th>Comanda</th><th>Produto</th><th>Qtd</th><th>Prioridade</th><th>Status Cozinha</th><th>Tempo restante</th><th>Mesa/ref</th></tr></thead><tbody>${queue
                 .map(
                   (r) =>
-                    `<tr><td data-label="Comanda">${esc(r.comanda.id)}</td><td data-label="Produto">${esc(r.item.name)}</td><td data-label="Qtd">${r.item.qty}</td><td data-label="Status Cozinha"><span class="tag">${esc(kitchenStatusLabel(r.item.kitchenStatus || "fila"))}</span></td><td data-label="Tempo restante">${Math.ceil(r.remainingMs / 60000)} min</td><td data-label="Mesa/ref">${esc(r.comanda.table)}</td></tr>`
+                    `<tr><td data-label="Comanda">${esc(r.comanda.id)}</td><td data-label="Produto">${esc(r.item.name)}</td><td data-label="Qtd">${r.item.qty}</td><td data-label="Prioridade"><span class="tag">${esc(kitchenPriorityLabel(r.item.kitchenPriority || "normal"))}</span></td><td data-label="Status Cozinha"><span class="tag">${esc(kitchenStatusLabel(r.item.kitchenStatus || "fila"))}</span></td><td data-label="Tempo restante">${Math.ceil(r.remainingMs / 60000)} min</td><td data-label="Mesa/ref">${esc(r.comanda.table)}</td></tr>`
                 )
                 .join("")}</tbody></table></div>`
             : `<div class="empty" style="margin-top:0.75rem;">Sem pedidos pendentes da cozinha.</div>`}
@@ -2138,13 +2348,14 @@
   function renderWaiterHistory() {
     const todayAudit = state.auditLog.slice(0, 250);
     const closed = allFinalizedComandasForFinance().sort((a, b) => new Date(b.closedAt || 0) - new Date(a.closedAt || 0)).slice(0, 150);
+    const waiterHistoryDetailsKey = detailKey("waiter-history", "audit");
 
     return `
       <div class="grid cols-2">
         <div class="card">
           <h3>Historico de Alteracoes (imutavel)</h3>
           <p class="note" style="margin-top:0.35rem;">Tipos de evento estao traduzidos para facilitar leitura rapida.</p>
-          <details class="compact-details" style="margin-top:0.75rem;">
+          <details class="compact-details" data-persist-key="${esc(waiterHistoryDetailsKey)}" style="margin-top:0.75rem;"${detailOpenAttr(waiterHistoryDetailsKey)}>
             <summary>Ver alteracoes (${todayAudit.length})</summary>
             ${todayAudit.length
               ? `<div class="table-wrap" style="margin-top:0.55rem;"><table class="history-table"><thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th></tr></thead><tbody>${todayAudit
@@ -2155,7 +2366,11 @@
               : `<div class="empty" style="margin-top:0.55rem;">Sem eventos ainda.</div>`}
           </details>
         </div>
-        ${renderComandaRecordsCompact(closed, { title: "Comandas Finalizadas (minimizadas)", limit: 150 })}
+        ${renderComandaRecordsCompact(closed, {
+          title: "Comandas Finalizadas (minimizadas)",
+          limit: 150,
+          keyPrefix: "waiter-history-comandas"
+        })}
       </div>
       ${renderComandaDetailsBox()}
     `;
@@ -2170,12 +2385,137 @@
         }
       }
     }
-    rows.sort((a, b) => new Date(a.item.createdAt) - new Date(b.item.createdAt));
+    rows.sort(kitchenSortRows);
     return rows;
   }
 
+  function findUserNameById(userId) {
+    if (userId === undefined || userId === null || userId === "") return "";
+    const user = state.users.find((entry) => String(entry.id) === String(userId));
+    return user?.name || "";
+  }
+
+  function resolveComandaResponsibleName(comanda) {
+    const byId = findUserNameById(comanda?.createdBy);
+    if (byId) return byId;
+    const openEvent = (comanda?.events || []).find((event) => event.type === "comanda_aberta" && event.actorName);
+    if (openEvent?.actorName) return openEvent.actorName;
+    const firstKnownActor = (comanda?.events || []).find((event) => event.actorName);
+    return firstKnownActor?.actorName || "-";
+  }
+
+  function matchesKitchenCollaborator(row, selectedActorId) {
+    if (!row || selectedActorId === "all") return true;
+    const selected = String(selectedActorId || "");
+    if (!selected) return true;
+    if (String(row.comanda?.createdBy || "") === selected) return true;
+    if (String(row.item?.kitchenStatusById || "") === selected) return true;
+    return (row.comanda?.events || []).some((event) => String(event.actorId || "") === selected);
+  }
+
+  function matchesKitchenRowSearch(row, searchTerm) {
+    const query = String(searchTerm || "").trim().toLowerCase();
+    if (!query) return true;
+    const responsible = resolveComandaResponsibleName(row.comanda);
+    return (
+      matchesComandaSearch(row.comanda, query) ||
+      String(row.item?.name || "").toLowerCase().includes(query) ||
+      String(row.item?.waiterNote || "").toLowerCase().includes(query) ||
+      String(row.item?.deliveryRecipient || "").toLowerCase().includes(query) ||
+      String(row.item?.deliveryLocation || "").toLowerCase().includes(query) ||
+      String(kitchenStatusLabel(row.item?.kitchenStatus || "fila")).toLowerCase().includes(query) ||
+      String(kitchenPriorityLabel(row.item?.kitchenPriority || "normal")).toLowerCase().includes(query) ||
+      String(responsible || "").toLowerCase().includes(query)
+    );
+  }
+
+  function kitchenRemainingLabel(item) {
+    const status = item?.kitchenStatus || "fila";
+    if (status === "em_falta") return "Aguardando ajuste";
+    const remainingMin = Math.ceil(kitchenRemainingMs(item) / 60000);
+    if (remainingMin <= 0) return status === "cozinhando" ? "Pronto para finalizar" : "Prioridade alta";
+    return `${remainingMin} min`;
+  }
+
+  function renderKitchenOpsBoard(rows, options = {}) {
+    const actor = getCurrentUser();
+    const canManagePriority = actor?.role === "admin";
+    const emptyMessage = options.emptyMessage || "Sem pedidos ativos na cozinha.";
+    if (!rows.length) {
+      return `<div class="empty" style="margin-top:0.75rem;">${esc(emptyMessage)}</div>`;
+    }
+
+    return `
+      <div class="kitchen-board" style="margin-top:0.75rem;">
+        ${rows
+          .map((row) => {
+            const status = row.item.kitchenStatus || "fila";
+            const statusLabel = kitchenStatusLabel(status);
+            const statusClass = status === "cozinhando" ? "cooking" : status === "em_falta" ? "missing" : status === "entregue" ? "done" : "queue";
+            const responsible = resolveComandaResponsibleName(row.comanda);
+            const deliveryInfo = row.item.deliveryRequested
+              ? `${row.item.deliveryRecipient || "-"} | ${row.item.deliveryLocation || "-"}`
+              : "Balcao/Mesa";
+            const kitchenBy = row.item.kitchenStatusByName || "-";
+            const priority = row.item.kitchenPriority || "normal";
+            const priorityLabel = kitchenPriorityLabel(priority);
+            const priorityClass = kitchenPriorityClass(priority);
+            const priorityBy = row.item.kitchenPriorityByName || "-";
+            const queueInfo = kitchenRemainingLabel(row.item);
+            const rowDetailsKey = detailKey("kitchen-row", row.comanda.id, row.item.id);
+
+            return `
+              <div class="kitchen-order-card status-${statusClass}">
+                <div class="kitchen-order-head">
+                  <div>
+                    <h4>${esc(row.item.name)} x${row.item.qty}</h4>
+                    <div class="kitchen-order-pills">
+                      <span class="kitchen-order-pill">Comanda ${esc(row.comanda.id)}</span>
+                      <span class="kitchen-order-pill">Mesa/ref ${esc(row.comanda.table || "-")}</span>
+                      <span class="kitchen-order-pill">Fila ${esc(queueInfo)}</span>
+                      <span class="kitchen-order-pill priority ${priorityClass}">${esc(priorityLabel)}</span>
+                      ${row.item.deliveryRequested ? `<span class="kitchen-order-pill delivery">Entrega</span>` : ""}
+                    </div>
+                    <p class="note">Cliente ${esc(row.comanda.customer || "-")}</p>
+                  </div>
+                  <span class="kitchen-order-status ${statusClass}">${esc(statusLabel)}</span>
+                </div>
+                <div class="kitchen-order-meta kitchen-order-meta-main">
+                  <div class="kitchen-meta-box meta-responsible"><span>Responsavel</span><b>${esc(responsible)}</b></div>
+                  <div class="kitchen-meta-box meta-updated-by"><span>Atualizado por</span><b>${esc(kitchenBy)}</b></div>
+                  <div class="kitchen-meta-box meta-priority"><span>Prioridade</span><b>${esc(priorityLabel)}</b></div>
+                  <div class="kitchen-meta-box meta-delivery"><span>Entrega</span><b>${esc(deliveryInfo)}</b></div>
+                </div>
+                ${
+                  canManagePriority
+                    ? `<div class="kitchen-priority-actions"><button class="btn secondary compact-action ${priority === "normal" ? "is-active" : ""}" data-action="kitchen-priority" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-priority="normal" ${priority === "normal" ? "disabled" : ""} title="Normal">Normal</button><button class="btn warn compact-action ${priority === "alta" ? "is-active" : ""}" data-action="kitchen-priority" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-priority="alta" ${priority === "alta" ? "disabled" : ""} title="Prioridade alta">Alta</button><button class="btn danger compact-action ${priority === "maxima" ? "is-active" : ""}" data-action="kitchen-priority" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-priority="maxima" ${priority === "maxima" ? "disabled" : ""} title="Prioridade maxima">Maxima</button></div>`
+                    : `<div class="note"><b>Prioridade:</b> ${esc(priorityLabel)}</div>`
+                }
+                ${row.item.waiterNote ? `<div class="kitchen-order-note"><b>Obs do garcom:</b> ${esc(row.item.waiterNote)}</div>` : ""}
+                <details class="kitchen-order-more" data-persist-key="${esc(rowDetailsKey)}"${detailOpenAttr(rowDetailsKey)}>
+                  <summary>Mais detalhes</summary>
+                  <div class="kitchen-order-meta kitchen-order-meta-extra">
+                    <div class="kitchen-meta-box"><span>Criado</span><b>${esc(formatDateTime(row.item.createdAt))}</b></div>
+                    <div class="kitchen-meta-box"><span>Ultima mudanca</span><b>${esc(formatDateTime(row.item.kitchenStatusAt))}</b></div>
+                    <div class="kitchen-meta-box"><span>Status atual</span><b>${esc(statusLabel)}</b></div>
+                    <div class="kitchen-meta-box"><span>Prioridade definida por</span><b>${esc(priorityBy)}</b></div>
+                  </div>
+                </details>
+                <div class="kitchen-order-actions">
+                  <button class="btn secondary compact-action ${status === "cozinhando" ? "is-active" : ""}" data-action="cook-status" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-status="cozinhando" ${status === "cozinhando" ? "disabled" : ""}>Em preparo</button>
+                  <button class="btn danger compact-action ${status === "em_falta" ? "is-active" : ""}" data-action="cook-status" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-status="em_falta" ${status === "em_falta" ? "disabled" : ""}>Em falta</button>
+                  <button class="btn ok compact-action" data-action="cook-status" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-status="entregue">Entregue</button>
+                </div>
+              </div>
+            `;
+          })
+          .join("")}
+      </div>
+    `;
+  }
+
   function renderCookActive() {
-    const rows = listActiveKitchenOrders().filter((row) => matchesComandaSearch(row.comanda, uiState.cookSearch));
+    const rows = listActiveKitchenOrders().filter((row) => matchesKitchenRowSearch(row, uiState.cookSearch));
     const countFila = rows.filter((r) => (r.item.kitchenStatus || "fila") === "fila").length;
     const countCooking = rows.filter((r) => (r.item.kitchenStatus || "fila") === "cozinhando").length;
     const countMissing = rows.filter((r) => (r.item.kitchenStatus || "fila") === "em_falta").length;
@@ -2189,21 +2529,13 @@
         </div>
         <div class="card">
           <h3>Ambiente Cozinha</h3>
-          <p class="note">Receba pedidos de cozinha em tempo real e atualize o status para garcom/admin.</p>
-          <p class="note" style="margin-top:0.25rem;">Este painel exibe itens com fluxo de cozinha (Cozinha e Ofertas dependentes da cozinha).</p>
+          <p class="note">Painel otimizado para celular, sem rolagem horizontal nos botoes de acao.</p>
+          <p class="note" style="margin-top:0.25rem;">Mostra pedidos com fluxo de cozinha e informacoes do garcom. A prioridade (normal/alta/maxima) e definida pelo administrador.</p>
           <div class="field" style="margin-top:0.75rem;">
-            <label>Busca por comanda</label>
-            <input data-role="cook-search" value="${esc(uiState.cookSearch)}" placeholder="Mesa/referencia/comanda/cliente" />
+            <label>Busca da cozinha</label>
+            <input data-role="cook-search" value="${esc(uiState.cookSearch)}" placeholder="Comanda, mesa, cliente, item, observacao ou responsavel" />
           </div>
-          <p class="note" style="margin-top:0.6rem;">Pedidos marcados como entrega exibem recebedor e local para separacao correta.</p>
-          ${rows.length
-            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table><thead><tr><th>Comanda</th><th>Mesa/ref</th><th>Cliente</th><th>Produto</th><th>Qtd</th><th>Obs</th><th>Status</th><th>Entrega</th><th>Acao</th></tr></thead><tbody>${rows
-                .map(
-                  (row) =>
-                    `<tr><td>${esc(row.comanda.id)}</td><td>${esc(row.comanda.table)}</td><td>${esc(row.comanda.customer || "-")}</td><td>${esc(row.item.name)}</td><td>${row.item.qty}</td><td>${esc(row.item.waiterNote || "-")}</td><td><span class="tag">${esc(kitchenStatusLabel(row.item.kitchenStatus || "fila"))}</span></td><td>${row.item.deliveryRequested ? `<div><b>${esc(row.item.deliveryRecipient || "-")}</b></div><div class="note">${esc(row.item.deliveryLocation || "-")}</div>` : "Balcao/Mesa"}</td><td><div class="actions"><button class="btn secondary" data-action="cook-status" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-status="cozinhando">Cozinhando</button><button class="btn danger" data-action="cook-status" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-status="em_falta">Em falta</button><button class="btn ok" data-action="cook-status" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-status="entregue">Entregue</button></div></td></tr>`
-                )
-                .join("")}</tbody></table></div>`
-            : `<div class="empty" style="margin-top:0.75rem;">Sem pedidos ativos na cozinha.</div>`}
+          ${renderKitchenOpsBoard(rows, { emptyMessage: "Sem pedidos ativos na cozinha para o filtro aplicado." })}
         </div>
       </div>
     `;
@@ -2211,17 +2543,18 @@
 
   function renderCookHistory() {
     const rows = [...(state.cookHistory || [])].sort((a, b) => new Date(b.deliveredAt || b.updatedAt || 0) - new Date(a.deliveredAt || a.updatedAt || 0));
+    const cookHistoryDetailsKey = detailKey("cook-history", "delivered");
     return `
       <div class="card">
         <h3>Historico da Cozinha</h3>
         <p class="note">Limpo automaticamente ao fechar o caixa.</p>
-        <details class="compact-details" style="margin-top:0.75rem;">
+        <details class="compact-details" data-persist-key="${esc(cookHistoryDetailsKey)}" style="margin-top:0.75rem;"${detailOpenAttr(cookHistoryDetailsKey)}>
           <summary>Ver historico (${rows.length})</summary>
           ${rows.length
-            ? `<div class="table-wrap" style="margin-top:0.55rem;"><table><thead><tr><th>Data</th><th>Comanda</th><th>Mesa/ref</th><th>Produto</th><th>Qtd</th><th>Status final</th><th>Entrega</th><th>Cozinheiro</th></tr></thead><tbody>${rows
+            ? `<div class="table-wrap" style="margin-top:0.55rem;"><table><thead><tr><th>Data</th><th>Comanda</th><th>Mesa/ref</th><th>Produto</th><th>Qtd</th><th>Prioridade</th><th>Status final</th><th>Entrega</th><th>Cozinheiro</th></tr></thead><tbody>${rows
                 .map(
                   (row) =>
-                    `<tr><td>${formatDateTime(row.deliveredAt || row.updatedAt)}</td><td>${esc(row.comandaId)}</td><td>${esc(row.table || "-")}</td><td>${esc(row.itemName)}</td><td>${row.qty}</td><td>${esc(kitchenStatusLabel(row.status || "entregue"))}</td><td>${row.deliveryRequested ? `<div><b>${esc(row.deliveryRecipient || "-")}</b></div><div class="note">${esc(row.deliveryLocation || "-")}</div>` : "Balcao/Mesa"}</td><td>${esc(row.cookName || "-")}</td></tr>`
+                    `<tr><td>${formatDateTime(row.deliveredAt || row.updatedAt)}</td><td>${esc(row.comandaId)}</td><td>${esc(row.table || "-")}</td><td>${esc(row.itemName)}</td><td>${row.qty}</td><td>${esc(kitchenPriorityLabel(row.priority || "normal"))}</td><td>${esc(kitchenStatusLabel(row.status || "entregue"))}</td><td>${row.deliveryRequested ? `<div><b>${esc(row.deliveryRecipient || "-")}</b></div><div class="note">${esc(row.deliveryLocation || "-")}</div>` : "Balcao/Mesa"}</td><td>${esc(row.cookName || "-")}</td></tr>`
                 )
                 .join("")}</tbody></table></div>`
             : `<div class="empty" style="margin-top:0.55rem;">Sem pedidos entregues pela cozinha neste caixa.</div>`}
@@ -2314,6 +2647,21 @@
   }
 
   function hydrateAfterRender() {
+    document.querySelectorAll("details[data-persist-key]").forEach((detailsEl) => {
+      const key = String(detailsEl.dataset.persistKey || "").trim();
+      if (!key) return;
+      const defaultOpen = String(detailsEl.dataset.persistDefaultOpen || "") === "true";
+      const shouldOpen = isDetailOpen(key, defaultOpen);
+      if (detailsEl.open !== shouldOpen) {
+        detailsEl.open = shouldOpen;
+      }
+      if (detailsEl.dataset.persistBound === "1") return;
+      detailsEl.dataset.persistBound = "1";
+      detailsEl.addEventListener("toggle", () => {
+        uiState.persistedDetailsOpen[key] = Boolean(detailsEl.open);
+      });
+    });
+
     document.querySelectorAll('form[data-role="add-item-form"]').forEach((form) => {
       const categorySel = form.querySelector('[data-role="item-category"]');
       const productSel = form.querySelector('[data-role="item-product"]');
@@ -2595,6 +2943,18 @@
     render();
   }
 
+  function minimizeOpenComanda(comandaId) {
+    const key = String(comandaId || "");
+    if (!key) return;
+    uiState.waiterCollapsedByComanda[key] = true;
+    delete uiState.finalizeOpenByComanda[key];
+    if (uiState.waiterActiveComandaId === key) {
+      uiState.waiterActiveComandaId = null;
+    }
+    uiState.waiterTab = "abertas";
+    render();
+  }
+
   function waiterDraftKey(comandaId) {
     return String(comandaId || "");
   }
@@ -2717,6 +3077,10 @@
       kitchenStatusAt: draft.needsKitchen ? isoNow() : null,
       kitchenStatusById: null,
       kitchenStatusByName: "",
+      kitchenPriority: draft.needsKitchen ? "normal" : "",
+      kitchenPriorityById: null,
+      kitchenPriorityByName: "",
+      kitchenPriorityAt: draft.needsKitchen ? isoNow() : null,
       kitchenAlertUnread: Boolean(draft.needsKitchen),
       waiterVisualState: "new",
       waiterVisualUpdatedAt: isoNow(),
@@ -2840,7 +3204,11 @@
                 ${candidates
                   .map(
                     (item) =>
-                      `<option value="${item.id}">${esc(item.name)} | qtd atual ${item.qty}${itemNeedsKitchen(item) ? ` | ${esc(kitchenStatusLabel(item.kitchenStatus || "fila"))}` : ""}</option>`
+                      `<option value="${item.id}">${esc(item.name)} | qtd atual ${item.qty}${
+                        itemNeedsKitchen(item)
+                          ? ` | ${esc(kitchenStatusLabel(item.kitchenStatus || "fila"))} | ${esc(kitchenPriorityLabel(item.kitchenPriority || "normal"))}`
+                          : ""
+                      }</option>`
                   )
                   .join("")}
               </select>
@@ -3246,6 +3614,10 @@
         kitchenStatusAt: isoNow(),
         kitchenStatusById: null,
         kitchenStatusByName: "",
+        kitchenPriority: "normal",
+        kitchenPriorityById: null,
+        kitchenPriorityByName: "",
+        kitchenPriorityAt: isoNow(),
         kitchenAlertUnread: true,
         waiterVisualState: "new",
         waiterVisualUpdatedAt: isoNow(),
@@ -3337,6 +3709,10 @@
           kitchenStatusAt: null,
           kitchenStatusById: null,
           kitchenStatusByName: "",
+          kitchenPriority: "",
+          kitchenPriorityById: null,
+          kitchenPriorityByName: "",
+          kitchenPriorityAt: null,
           kitchenAlertUnread: false,
           canceled: false,
           canceledAt: null,
@@ -3457,6 +3833,36 @@
     render();
   }
 
+  function setKitchenItemPriority(comandaId, itemId, priority) {
+    const actor = currentActor();
+    if (actor.role !== "admin") {
+      alert("Somente administrador pode alterar prioridade de pedido.");
+      return;
+    }
+    if (!["normal", "alta", "maxima"].includes(priority)) return;
+
+    const comanda = findOpenComanda(comandaId);
+    if (!comanda) return;
+    const item = (comanda.items || []).find((entry) => entry.id === itemId);
+    if (!item || !itemNeedsKitchen(item) || item.canceled || item.delivered) return;
+    if ((item.kitchenPriority || "normal") === priority) return;
+
+    item.kitchenPriority = priority;
+    item.kitchenPriorityById = actor.id;
+    item.kitchenPriorityByName = actor.name;
+    item.kitchenPriorityAt = isoNow();
+
+    appendComandaEvent(comanda, {
+      actor,
+      type: "cozinha_prioridade",
+      detail: `Prioridade do pedido ${item.name} alterada para ${kitchenPriorityLabel(priority)}.`,
+      itemId: item.id
+    });
+
+    saveState();
+    render();
+  }
+
   function setKitchenItemStatus(comandaId, itemId, status) {
     const actor = currentActor();
     if (actor.role !== "cook" && actor.role !== "admin") {
@@ -3495,6 +3901,7 @@
         itemName: item.name,
         qty: item.qty,
         status: status,
+        priority: item.kitchenPriority || "normal",
         cookId: actor.id,
         cookName: actor.name,
         deliveryRequested: Boolean(item.deliveryRequested),
@@ -3834,11 +4241,16 @@
       return;
     }
 
-    if (!confirm("Confirmar fechamento do caixa? Comandas do dia serao movidas para historico e dados operacionais limpos.")) {
+    const openedAt = state.cash.openedAt;
+    const closedAt = isoNow();
+    const confirmText =
+      `Confirmar fechamento do caixa ${state.cash.id}?\n` +
+      `Aberto em: ${formatDateTimeWithDay(openedAt)}\n` +
+      `Fechamento em: ${formatDateTimeWithDay(closedAt)}\n\n` +
+      "Comandas do dia serao movidas para historico e dados operacionais limpos.";
+    if (!confirm(confirmText)) {
       return;
     }
-
-    const closedAt = isoNow();
     const rolloverOpen = state.openComandas.map((c) => ({
       ...c,
       status: "encerrada-no-fechamento",
@@ -3849,7 +4261,7 @@
     const closure = {
       id: `HIST-${Date.now()}`,
       cashId: state.cash.id,
-      openedAt: state.cash.openedAt,
+      openedAt,
       closedAt,
       commandas: allDayComandas,
       auditLog: [
@@ -3860,7 +4272,7 @@
           actorRole: actor.role,
           actorName: actor.name,
           type: "caixa_fechado",
-          detail: `Caixa ${state.cash.id} fechado com segunda autenticacao.`,
+          detail: `Caixa ${state.cash.id} fechado com segunda autenticacao. Aberto em ${formatDateTimeWithDay(openedAt)} e fechado em ${formatDateTimeWithDay(closedAt)}.`,
           comandaId: null,
           itemId: null,
           reason: ""
@@ -3886,7 +4298,7 @@
     appendAudit({ actor, type: "caixa_novo", detail: `Novo caixa ${state.cash.id} iniciado.` });
 
     saveState();
-    alert("Caixa fechado com sucesso. Historico mantido por 90 dias.");
+    alert(`Caixa fechado com sucesso.\nAbertura: ${formatDateTimeWithDay(openedAt)}\nFechamento: ${formatDateTimeWithDay(closedAt)}\nHistorico mantido por 90 dias.`);
     render();
   }
 
@@ -3990,6 +4402,11 @@
       return;
     }
 
+    if (action === "minimize-open-comanda") {
+      minimizeOpenComanda(button.dataset.comandaId);
+      return;
+    }
+
     if (action === "open-item-selector") {
       openComandaItemSelector(button.dataset.comandaId, button.dataset.mode || "increment");
       return;
@@ -4042,6 +4459,11 @@
 
     if (action === "cook-status") {
       setKitchenItemStatus(button.dataset.comandaId, button.dataset.itemId, button.dataset.status);
+      return;
+    }
+
+    if (action === "kitchen-priority") {
+      setKitchenItemPriority(button.dataset.comandaId, button.dataset.itemId, button.dataset.priority);
       return;
     }
 
@@ -4261,9 +4683,16 @@
         return;
       }
 
+      if (target.matches('[data-role="admin-kitchen-search"]')) {
+        uiState.adminKitchenSearch = target.value || "";
+        render();
+        return;
+      }
+
       if (target.matches('[data-role="cook-search"]')) {
         uiState.cookSearch = target.value || "";
         render();
+        return;
       }
     } catch (err) {
       reportUiRuntimeError("change", err);
@@ -4276,6 +4705,16 @@
       const target = event.target;
       if (target.matches('[data-role="waiter-catalog-search"]')) {
         uiState.waiterCatalogSearch = target.value || "";
+        render();
+        return;
+      }
+      if (target.matches('[data-role="admin-kitchen-search"]')) {
+        uiState.adminKitchenSearch = target.value || "";
+        render();
+        return;
+      }
+      if (target.matches('[data-role="cook-search"]')) {
+        uiState.cookSearch = target.value || "";
         render();
       }
     } catch (err) {
@@ -4318,7 +4757,7 @@
     if (user?.role === "cook" && uiState.cookTab === "ativos") {
       render();
     }
-    if (user?.role === "admin" && uiState.adminTab === "monitor") {
+    if (user?.role === "admin" && (uiState.adminTab === "monitor" || (uiState.adminTab === "comandas" && uiState.waiterTab === "cozinha"))) {
       render();
     }
   }, 5000);
