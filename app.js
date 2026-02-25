@@ -56,7 +56,12 @@
     remoteMonitorEvents: [],
     waiterReadyModalItems: [],
     waiterReadySeenMap: {},
-    waiterDraftByComanda: {}
+    waiterDraftByComanda: {},
+    itemSelector: {
+      open: false,
+      comandaId: "",
+      mode: "increment"
+    }
   };
 
   function isoNow() {
@@ -643,6 +648,7 @@
       item_add: "Item adicionado",
       item_incrementado: "Quantidade ajustada",
       item_cancelado: "Item cancelado",
+      item_reduzido: "Item reduzido",
       item_entregue: "Item entregue",
       cozinha_status: "Atualizacao da cozinha",
       comanda_obs: "Observacao adicionada",
@@ -1819,9 +1825,6 @@
         flags.push(`<span class="tag">${esc(item.kitchenStatusByName)}</span>`);
       }
     }
-    const actionButtons = item.canceled
-      ? ""
-      : `<button class="btn secondary compact-action" data-action="increment-item" data-comanda-id="${comanda.id}" data-item-id="${item.id}">+1</button><button class="btn danger compact-action" data-action="cancel-item" data-comanda-id="${comanda.id}" data-item-id="${item.id}">Devolucao/cancelar</button>`;
 
     return `
       <div class="item-row ${tone ? `item-row-${tone}` : ""}">
@@ -1832,7 +1835,6 @@
         ${item.canceled ? `<div class="note">Cancelamento: ${esc(item.cancelReason || "-")} ${item.cancelNote ? `| ${esc(item.cancelNote)}` : ""}</div>` : ""}
         <div class="actions">
           ${flags.join(" ")}
-          ${actionButtons}
         </div>
       </div>
     `;
@@ -1900,6 +1902,11 @@
 
         ${!isCollapsed && comanda.notes?.length ? `<div class="note">Obs da comanda: ${comanda.notes.map((n) => esc(n)).join(" | ")}</div>` : ""}
         ${!isCollapsed && canResolveIndicator ? `<div class="actions indicator-actions"><button class="btn secondary" data-action="resolve-kitchen-indicator" data-comanda-id="${comanda.id}" data-mode="entendi">Entendi o alerta</button></div>` : ""}
+        ${
+          !isCollapsed && validItemsCount
+            ? `<div class="actions comanda-item-icon-actions"><button class="btn icon-action-btn plus" data-action="open-item-selector" data-comanda-id="${comanda.id}" data-mode="increment" title="Adicionar quantidade em item" aria-label="Adicionar quantidade em item">+</button><button class="btn icon-action-btn cancel" data-action="open-item-selector" data-comanda-id="${comanda.id}" data-mode="cancel" title="Devolver/cancelar quantidade" aria-label="Devolver ou cancelar quantidade">x</button></div>`
+            : ""
+        }
 
         ${
           isCollapsed
@@ -2281,6 +2288,7 @@
         ${renderTabs("waiter", tabs, uiState.waiterTab)}
         ${content}
         ${renderWaiterReadyModal()}
+        ${renderComandaItemSelectorModal()}
       </div>
     `;
   }
@@ -2778,6 +2786,110 @@
     render();
   }
 
+  function listComandaSelectableItems(comandaId) {
+    const comanda = findOpenComanda(comandaId);
+    if (!comanda) return [];
+    return (comanda.items || []).filter((item) => !item.canceled && Number(item.qty || 0) > 0);
+  }
+
+  function openComandaItemSelector(comandaId, mode = "increment") {
+    const comanda = findOpenComanda(comandaId);
+    if (!comanda) return;
+    const allowedMode = mode === "cancel" ? "cancel" : "increment";
+    const candidates = listComandaSelectableItems(comandaId);
+    if (!candidates.length) {
+      alert("Nao ha itens validos nessa comanda.");
+      return;
+    }
+    uiState.itemSelector = {
+      open: true,
+      comandaId: String(comandaId),
+      mode: allowedMode
+    };
+    render();
+  }
+
+  function closeComandaItemSelector() {
+    uiState.itemSelector = {
+      open: false,
+      comandaId: "",
+      mode: "increment"
+    };
+    render();
+  }
+
+  function renderComandaItemSelectorModal() {
+    const selector = uiState.itemSelector || {};
+    if (!selector.open || !selector.comandaId) return "";
+    const comanda = findOpenComanda(selector.comandaId);
+    if (!comanda) return "";
+
+    const mode = selector.mode === "cancel" ? "cancel" : "increment";
+    const candidates = listComandaSelectableItems(comanda.id);
+    if (!candidates.length) return "";
+
+    return `
+      <div class="item-selector-modal-backdrop">
+        <div class="card item-selector-modal">
+          <h3>${mode === "increment" ? "Adicionar quantidade no item" : "Devolver/cancelar quantidade"}</h3>
+          <p class="note" style="margin-top:0.3rem;">Comanda ${esc(comanda.id)} | Referencia: ${esc(comanda.table || "-")}.</p>
+          <form class="form" data-role="item-selector-form" data-comanda-id="${comanda.id}" data-mode="${mode}" style="margin-top:0.7rem;">
+            <div class="field">
+              <label>Item</label>
+              <select name="itemId" required>
+                ${candidates
+                  .map(
+                    (item) =>
+                      `<option value="${item.id}">${esc(item.name)} | qtd atual ${item.qty}${itemNeedsKitchen(item) ? ` | ${esc(kitchenStatusLabel(item.kitchenStatus || "fila"))}` : ""}</option>`
+                  )
+                  .join("")}
+              </select>
+            </div>
+            <div class="field">
+              <label>Quantidade</label>
+              <input name="qty" type="number" min="1" value="1" required />
+            </div>
+            ${
+              mode === "cancel"
+                ? `<div class="field"><label>Motivo</label><select name="reason">${CANCEL_REASONS.map((reason) => `<option value="${esc(reason)}">${esc(reason)}</option>`).join("")}</select></div><div class="field"><label>Observacao (opcional)</label><input name="note" placeholder="Ex: cliente desistiu" /></div>`
+                : ""
+            }
+            <div class="actions">
+              <button class="btn secondary" type="button" data-action="close-item-selector">Fechar</button>
+              <button class="btn ${mode === "increment" ? "ok" : "danger"}" type="submit">${mode === "increment" ? "Aplicar +" : "Aplicar cancelamento"}</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  function submitComandaItemSelector(form) {
+    const comandaId = form.dataset.comandaId;
+    const mode = form.dataset.mode === "cancel" ? "cancel" : "increment";
+    const itemId = form.itemId.value;
+    const qty = Math.max(1, Number(form.qty.value || 1));
+    if (!itemId || !Number.isFinite(qty) || qty <= 0) {
+      alert("Informe item e quantidade valida.");
+      return;
+    }
+
+    uiState.itemSelector = {
+      open: false,
+      comandaId: "",
+      mode: "increment"
+    };
+
+    if (mode === "increment") {
+      incrementItem(comandaId, itemId, qty);
+      return;
+    }
+
+    const reason = String(form.reason?.value || "Desistencia de pedido").trim() || "Desistencia de pedido";
+    const note = String(form.note?.value || "").trim();
+    cancelItem(comandaId, itemId, { qty, reason, note, skipPrompt: true });
+  }
+
   function login(login, password) {
     const user = findUserByLoginPassword(login, password);
     if (!user) {
@@ -2798,6 +2910,7 @@
     uiState.waiterReadyModalItems = [];
     uiState.waiterReadySeenMap = {};
     uiState.waiterDraftByComanda = {};
+    uiState.itemSelector = { open: false, comandaId: "", mode: "increment" };
     saveState({ skipCloud: true, touchMeta: false });
     render();
   }
@@ -3308,26 +3421,27 @@
     render();
   }
 
-  function incrementItem(comandaId, itemId) {
+  function incrementItem(comandaId, itemId, amount = 1) {
     const actor = currentActor();
     const comanda = findOpenComanda(comandaId);
     if (!comanda) return;
 
     const item = (comanda.items || []).find((i) => i.id === itemId);
     if (!item || item.canceled) return;
+    const delta = Math.max(1, Math.floor(Number(amount || 1)));
 
     const product = state.products.find((p) => p.id === item.productId);
     if (product && product.available === false) {
       alert(`Produto ${product.name} esta indisponivel no cardapio.`);
       return;
     }
-    if (!product || product.stock < 1) {
-      alert("Sem estoque para adicionar mais uma unidade.");
+    if (!product || Number(product.stock || 0) < delta) {
+      alert(`Sem estoque para adicionar essa quantidade. Disponivel: ${product?.stock ?? 0}.`);
       return;
     }
 
-    product.stock -= 1;
-    item.qty = Number(item.qty || 0) + 1;
+    product.stock -= delta;
+    item.qty = Number(item.qty || 0) + delta;
     item.lastIncrementAt = isoNow();
     item.waiterVisualState = "new";
     item.waiterVisualUpdatedAt = isoNow();
@@ -3335,7 +3449,7 @@
     appendComandaEvent(comanda, {
       actor,
       type: "item_incrementado",
-      detail: `Item ${item.name} incrementado (+1). Nova quantidade: ${item.qty}.`,
+      detail: `Item ${item.name} incrementado (+${delta}). Nova quantidade: ${item.qty}.`,
       itemId: item.id
     });
 
@@ -3452,7 +3566,7 @@
     render();
   }
 
-  function cancelItem(comandaId, itemId) {
+  function cancelItem(comandaId, itemId, options = {}) {
     const actor = currentActor();
     const comanda = findOpenComanda(comandaId);
     if (!comanda) return;
@@ -3460,31 +3574,60 @@
     const item = (comanda.items || []).find((i) => i.id === itemId);
     if (!item || item.canceled) return;
 
-    const reasonPrompt = `Motivo da devolucao/cancelamento:\n${CANCEL_REASONS.join(" | ")}`;
-    const reason = prompt(reasonPrompt, "Desistencia de pedido");
-    if (reason === null) return;
-    const note = prompt("Observacao adicional (opcional):", "") || "";
+    const currentQty = Math.max(1, Number(item.qty || 1));
+    const requestedQtyRaw = options.qty !== undefined ? Number(options.qty) : currentQty;
+    if (!Number.isFinite(requestedQtyRaw) || requestedQtyRaw <= 0) {
+      alert("Quantidade invalida para devolucao/cancelamento.");
+      return;
+    }
+    const qtyToCancel = Math.min(currentQty, Math.max(1, Math.floor(requestedQtyRaw)));
 
-    item.canceled = true;
-    item.canceledAt = isoNow();
-    item.cancelReason = reason;
-    item.cancelNote = note;
-    item.kitchenAlertUnread = false;
-    item.waiterVisualState = "";
-    item.waiterVisualUpdatedAt = isoNow();
+    let reason = "";
+    let note = "";
+    if (options.skipPrompt) {
+      reason = String(options.reason || "Desistencia de pedido").trim() || "Desistencia de pedido";
+      note = String(options.note || "").trim();
+    } else {
+      const reasonPrompt = `Motivo da devolucao/cancelamento:\n${CANCEL_REASONS.join(" | ")}`;
+      const chosenReason = prompt(reasonPrompt, "Desistencia de pedido");
+      if (chosenReason === null) return;
+      reason = chosenReason;
+      note = prompt("Observacao adicional (opcional):", "") || "";
+    }
 
     const product = state.products.find((p) => p.id === item.productId);
     if (product) {
-      product.stock += Number(item.qty || 0);
+      product.stock += qtyToCancel;
     }
 
-    appendComandaEvent(comanda, {
-      actor,
-      type: "item_cancelado",
-      detail: `Item ${item.name} cancelado/devolvido e estoque ajustado.`,
-      reason,
-      itemId: item.id
-    });
+    if (qtyToCancel >= currentQty) {
+      item.canceled = true;
+      item.canceledAt = isoNow();
+      item.cancelReason = reason;
+      item.cancelNote = note;
+      item.kitchenAlertUnread = false;
+      item.waiterVisualState = "";
+      item.waiterVisualUpdatedAt = isoNow();
+      appendComandaEvent(comanda, {
+        actor,
+        type: "item_cancelado",
+        detail: `Item ${item.name} cancelado/devolvido e estoque ajustado.`,
+        reason,
+        itemId: item.id
+      });
+    } else {
+      item.qty = currentQty - qtyToCancel;
+      item.lastIncrementAt = isoNow();
+      item.waiterVisualState = "";
+      item.waiterVisualUpdatedAt = isoNow();
+      appendComandaEvent(comanda, {
+        actor,
+        type: "item_reduzido",
+        detail: `Item ${item.name} reduzido em ${qtyToCancel}. Quantidade restante: ${item.qty}. Estoque ajustado.`,
+        reason,
+        itemId: item.id
+      });
+    }
 
     comanda.kitchenAlertUnread = kitchenAlertCount(comanda) > 0;
 
@@ -3847,6 +3990,16 @@
       return;
     }
 
+    if (action === "open-item-selector") {
+      openComandaItemSelector(button.dataset.comandaId, button.dataset.mode || "increment");
+      return;
+    }
+
+    if (action === "close-item-selector") {
+      closeComandaItemSelector();
+      return;
+    }
+
     if (action === "edit-product") {
       editProduct(Number(button.dataset.id));
       return;
@@ -3989,6 +4142,11 @@
 
       if (form.id === "quick-sale-form") {
         createQuickSale(form);
+        return;
+      }
+
+      if (form.matches('form[data-role="item-selector-form"]')) {
+        submitComandaItemSelector(form);
         return;
       }
 

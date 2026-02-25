@@ -413,6 +413,33 @@ th {
   flex: 0 1 auto;
 }
 
+.comanda-item-icon-actions {
+  margin-top: 0.38rem;
+}
+
+.icon-action-btn {
+  width: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  font-size: 1.05rem;
+  font-weight: 900;
+}
+
+.icon-action-btn.plus {
+  background: #173221;
+  color: #8de8ac;
+  border-color: #2f7048;
+}
+
+.icon-action-btn.cancel {
+  background: #351b22;
+  color: #ff9ca6;
+  border-color: #6d2a3a;
+}
+
 .kpis {
   display: grid;
   gap: 0.72rem;
@@ -711,6 +738,22 @@ th {
   padding: 0.5rem 0.58rem;
 }
 
+.item-selector-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 7, 12, 0.72);
+  z-index: 125;
+  display: grid;
+  place-items: center;
+  padding: 0.75rem;
+}
+
+.item-selector-modal {
+  width: min(560px, 100%);
+  border-color: #2f5074;
+  box-shadow: 0 22px 42px rgba(0, 0, 0, 0.55);
+}
+
 .monitor-table-wrap {
   border-color: #2f4573;
 }
@@ -990,9 +1033,21 @@ th {
     font-size: 0.82rem;
   }
 
+  .icon-action-btn {
+    width: 42px;
+    min-height: 42px;
+    font-size: 1.1rem;
+  }
+
   .compact-details {
     border-radius: 12px;
     padding: 0.5rem 0.55rem;
+  }
+
+  .item-selector-modal {
+    width: 100%;
+    max-height: 86vh;
+    overflow-y: auto;
   }
 }
 
