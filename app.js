@@ -53,7 +53,10 @@
     cookSearch: "",
     supabaseStatus: "desconectado",
     supabaseLastError: "",
-    remoteMonitorEvents: []
+    remoteMonitorEvents: [],
+    waiterReadyModalItems: [],
+    waiterReadySeenMap: {},
+    waiterDraftByComanda: {}
   };
 
   function isoNow() {
@@ -217,13 +220,21 @@
   function normalizeComandaItem(item, fallbackId = 0) {
     const category = normalizeCategoryName(item.category);
     const requiresKitchen = category === "Cozinha" ? true : category === "Ofertas" ? Boolean(item.requiresKitchen) : false;
+    const visualState =
+      item.waiterVisualState === "new" || item.waiterVisualState === "ready"
+        ? item.waiterVisualState
+        : item.kitchenStatus === "entregue" && item.kitchenAlertUnread
+          ? "ready"
+          : "";
     return {
       ...item,
       id: item.id || `IT-NORM-${fallbackId}`,
       category,
       requiresKitchen,
       needsKitchen: item.needsKitchen !== undefined ? Boolean(item.needsKitchen) : requiresKitchen,
-      kitchenAlertUnread: Boolean(item.kitchenAlertUnread)
+      kitchenAlertUnread: Boolean(item.kitchenAlertUnread),
+      waiterVisualState: visualState,
+      waiterVisualUpdatedAt: item.waiterVisualUpdatedAt || null
     };
   }
 
@@ -624,6 +635,111 @@
     if (status === "em_falta") return "warn";
     if (status === "entregue") return "ok";
     return "";
+  }
+
+  function eventTypeLabel(type) {
+    const labels = {
+      comanda_aberta: "Comanda aberta",
+      item_add: "Item adicionado",
+      item_incrementado: "Quantidade ajustada",
+      item_cancelado: "Item cancelado",
+      item_entregue: "Item entregue",
+      cozinha_status: "Atualizacao da cozinha",
+      comanda_obs: "Observacao adicionada",
+      comanda_finalizada: "Comanda finalizada",
+      comanda_finalizada_auto: "Finalizacao automatica",
+      garcom_ciente_alerta: "Garcom ciente do alerta",
+      garcom_entregou_pedido: "Garcom confirmou entrega",
+      venda_avulsa: "Venda avulsa",
+      venda_avulsa_cozinha: "Venda avulsa (cozinha)",
+      fiado_pago: "Fiado marcado como pago",
+      produto_add: "Produto criado",
+      produto_edit: "Produto alterado",
+      produto_delete: "Produto removido",
+      produto_disponibilidade: "Disponibilidade alterada",
+      funcionario_add: "Funcionario criado",
+      funcionario_edit: "Funcionario alterado",
+      funcionario_delete: "Funcionario removido"
+    };
+    return labels[type] || String(type || "").replaceAll("_", " ") || "-";
+  }
+
+  function renderEventTypeTag(type) {
+    const label = eventTypeLabel(type);
+    return `<span class="tag event-type-tag" title="${esc(type || "")}">${esc(label)}</span>`;
+  }
+
+  function isKitchenReadyForWaiter(item) {
+    if (!itemNeedsKitchen(item) || item.canceled) return false;
+    if (item.waiterDeliveredAt) return false;
+    if (item.waiterVisualState === "ready") return true;
+    return item.kitchenStatus === "entregue" && item.kitchenAlertUnread;
+  }
+
+  function waiterItemHighlightTone(item) {
+    if (!item || item.canceled) return "";
+    if (isKitchenReadyForWaiter(item)) return "ready";
+    if (item.waiterVisualState === "new") return "new";
+    return "";
+  }
+
+  function listWaiterReadyItems() {
+    const rows = [];
+    for (const comanda of state.openComandas) {
+      for (const item of comanda.items || []) {
+        if (!isKitchenReadyForWaiter(item)) continue;
+        rows.push({
+          comandaId: comanda.id,
+          table: comanda.table || "-",
+          customer: comanda.customer || "",
+          itemId: item.id,
+          itemName: item.name,
+          qty: item.qty,
+          deliveryRequested: Boolean(item.deliveryRequested),
+          deliveryRecipient: item.deliveryRecipient || "",
+          deliveryLocation: item.deliveryLocation || ""
+        });
+      }
+    }
+    rows.sort((a, b) => String(a.comandaId).localeCompare(String(b.comandaId), "pt-BR"));
+    return rows;
+  }
+
+  function waitReadyKey(comandaId, itemId) {
+    return `${String(comandaId)}::${String(itemId)}`;
+  }
+
+  function syncWaiterReadyModal() {
+    const user = getCurrentUser();
+    if (!user || user.role !== "waiter") {
+      uiState.waiterReadyModalItems = [];
+      return;
+    }
+
+    const readyRows = listWaiterReadyItems();
+    const activeKeys = new Set(readyRows.map((row) => waitReadyKey(row.comandaId, row.itemId)));
+    uiState.waiterReadyModalItems = (uiState.waiterReadyModalItems || []).filter((row) =>
+      activeKeys.has(waitReadyKey(row.comandaId, row.itemId))
+    );
+    for (const key of Object.keys(uiState.waiterReadySeenMap || {})) {
+      if (!activeKeys.has(key)) {
+        delete uiState.waiterReadySeenMap[key];
+      }
+    }
+
+    const unseen = readyRows.filter((row) => !uiState.waiterReadySeenMap[waitReadyKey(row.comandaId, row.itemId)]);
+    if (unseen.length) {
+      for (const row of unseen) {
+        uiState.waiterReadySeenMap[waitReadyKey(row.comandaId, row.itemId)] = true;
+      }
+      const merged = [...(uiState.waiterReadyModalItems || [])];
+      for (const row of unseen) {
+        if (!merged.some((existing) => waitReadyKey(existing.comandaId, existing.itemId) === waitReadyKey(row.comandaId, row.itemId))) {
+          merged.push(row);
+        }
+      }
+      uiState.waiterReadyModalItems = merged;
+    }
   }
 
   function kitchenIndicatorMeta(comanda) {
@@ -1265,7 +1381,7 @@
     const events = (comanda.events || [])
       .slice(-20)
       .reverse()
-      .map((e) => `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName)}</td><td>${esc(e.type)}</td><td>${esc(e.detail)}</td></tr>`)
+      .map((e) => `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName)}</td><td>${renderEventTypeTag(e.type)}</td><td>${esc(e.detail)}</td></tr>`)
       .join("");
 
     return `
@@ -1284,7 +1400,7 @@
           </table>
         </div>
         <div class="table-wrap" style="margin-top:0.5rem;">
-          <table>
+          <table class="history-table">
             <thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Detalhe</th></tr></thead>
             <tbody>${events || `<tr><td colspan="4">Sem eventos.</td></tr>`}</tbody>
           </table>
@@ -1328,11 +1444,11 @@
                 </summary>
                 <div class="note" style="margin-top:0.45rem;">Atualizada em: ${formatDateTime(comandaUpdatedAt(comanda))}</div>
                 <div class="table-wrap" style="margin-top:0.5rem;">
-                  <table>
+                  <table class="history-table">
                     <thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Detalhe</th></tr></thead>
                     <tbody>
                       ${events.length
-                        ? events.map((e) => `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName || "-")}</td><td>${esc(e.type || "-")}</td><td>${esc(e.detail || "-")}</td></tr>`).join("")
+                        ? events.map((e) => `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName || "-")}</td><td>${renderEventTypeTag(e.type || "-")}</td><td>${esc(e.detail || "-")}</td></tr>`).join("")
                         : `<tr><td colspan="4">Sem eventos registrados.</td></tr>`}
                     </tbody>
                   </table>
@@ -1351,6 +1467,10 @@
   function renderAdminHistory() {
     const currentAudit = state.auditLog.slice(0, 250);
     const closures = state.history90;
+    const closureComandas = closures.flatMap((closure) => closure.commandas || []);
+    const compactHistoryComandas = [...state.closedComandas, ...closureComandas].sort(
+      (a, b) => new Date(comandaUpdatedAt(b) || 0) - new Date(comandaUpdatedAt(a) || 0)
+    );
 
     return `
       <div class="grid cols-2">
@@ -1360,10 +1480,10 @@
           <details class="compact-details" style="margin-top:0.75rem;">
             <summary>Ver alteracoes do dia (${currentAudit.length})</summary>
             ${currentAudit.length
-              ? `<div class="table-wrap" style="margin-top:0.55rem;"><table><thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th><th>Abrir</th></tr></thead><tbody>${currentAudit
+              ? `<div class="table-wrap" style="margin-top:0.55rem;"><table class="history-table"><thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th><th>Abrir</th></tr></thead><tbody>${currentAudit
                   .map(
                     (e) =>
-                      `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName)} (${esc(e.actorRole)})</td><td>${esc(e.type)}</td><td>${esc(e.comandaId || "-")}</td><td>${esc(e.detail)}</td><td>${
+                      `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName)} (${esc(e.actorRole)})</td><td>${renderEventTypeTag(e.type)}</td><td>${esc(e.comandaId || "-")}</td><td>${esc(e.detail)}</td><td>${
                         e.comandaId ? `<button class="btn secondary" data-action="open-comanda-details" data-comanda-id="${e.comandaId}">Ver</button>` : "-"
                       }</td></tr>`
                   )
@@ -1372,22 +1492,23 @@
           </details>
           ${renderComandaDetailsBox()}
         </div>
-        <div class="card">
-          <h3>Historico de Fechamentos (90 dias)</h3>
-          ${closures.length
-            ? closures
-                .map((h) => {
-                  const summary = h.summary || buildCashSummary(h.commandas || []);
-                  return `<details style="margin-top:0.75rem;"><summary><b>${esc(h.id)}</b> | Fechado em ${formatDateTime(h.closedAt)} | ${summary.commandasCount} comandas | ${money(summary.total)}</summary><div class="table-wrap" style="margin-top:0.6rem;"><table><thead><tr><th>Comanda</th><th>Status</th><th>Total</th><th>Cliente</th><th>Abrir</th></tr></thead><tbody>${(h.commandas || [])
-                    .map(
-                      (c) =>
-                        `<tr><td>${esc(c.id)}</td><td>${esc(c.status)}</td><td>${money(comandaTotal(c))}</td><td>${esc(c.customer || "-")}</td><td><button class="btn secondary" data-action="open-comanda-details" data-comanda-id="${c.id}">Ver</button></td></tr>`
-                    )
-                    .join("")}</tbody></table></div></details>`;
-                })
-                .join("")
-            : `<div class="empty" style="margin-top:0.75rem;">Nenhum fechamento realizado ainda.</div>`}
-        </div>
+        ${renderComandaRecordsCompact(compactHistoryComandas, { title: "Comandas no Historico (minimizadas)", limit: 220 })}
+      </div>
+      <div class="card" style="margin-top:0.75rem;">
+        <h3>Fechamentos de Caixa (90 dias)</h3>
+        ${closures.length
+          ? closures
+              .map((h) => {
+                const summary = h.summary || buildCashSummary(h.commandas || []);
+                return `<details class="compact-details" style="margin-top:0.65rem;"><summary><b>${esc(h.id)}</b> | Fechado em ${formatDateTime(h.closedAt)} | ${summary.commandasCount} comandas | ${money(summary.total)}</summary><div class="table-wrap" style="margin-top:0.6rem;"><table><thead><tr><th>Comanda</th><th>Status</th><th>Total</th><th>Cliente</th><th>Abrir</th></tr></thead><tbody>${(h.commandas || [])
+                  .map(
+                    (c) =>
+                      `<tr><td>${esc(c.id)}</td><td>${esc(c.status)}</td><td>${money(comandaTotal(c))}</td><td>${esc(c.customer || "-")}</td><td><button class="btn secondary" data-action="open-comanda-details" data-comanda-id="${c.id}">Ver</button></td></tr>`
+                  )
+                  .join("")}</tbody></table></div></details>`;
+              })
+              .join("")
+          : `<div class="empty" style="margin-top:0.75rem;">Nenhum fechamento realizado ainda.</div>`}
       </div>
     `;
   }
@@ -1479,11 +1600,11 @@
           <details class="compact-details" style="margin-top:0.75rem;">
             <summary>Historico de alteracoes (oculto)</summary>
             ${filteredEvents.length
-              ? `<div class="table-wrap" style="margin-top:0.65rem;"><table><thead><tr><th>Data</th><th>Funcionario</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th></tr></thead><tbody>${filteredEvents
+              ? `<div class="table-wrap" style="margin-top:0.65rem;"><table class="history-table"><thead><tr><th>Data</th><th>Funcionario</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th></tr></thead><tbody>${filteredEvents
                   .slice(0, 220)
                   .map(
                     (e) =>
-                      `<tr><td>${formatDateTime(e.ts || e.broadcastAt)}</td><td>${esc(e.actorName || "-")}</td><td>${esc(e.type || "-")}</td><td>${esc(e.comandaId || "-")}</td><td>${esc(e.detail || "-")}</td></tr>`
+                      `<tr><td>${formatDateTime(e.ts || e.broadcastAt)}</td><td>${esc(e.actorName || "-")}</td><td>${renderEventTypeTag(e.type || "-")}</td><td>${esc(e.comandaId || "-")}</td><td>${esc(e.detail || "-")}</td></tr>`
                   )
                   .join("")}</tbody></table></div>`
               : `<div class="empty" style="margin-top:0.65rem;">Sem eventos para o filtro atual.</div>`}
@@ -1687,6 +1808,9 @@
     if (item.canceled) flags.push('<span class="tag">Cancelado</span>');
     if (item.delivered) flags.push('<span class="tag">Entregue</span>');
     if (item.deliveryRequested) flags.push('<span class="tag">Entrega</span>');
+    const tone = waiterItemHighlightTone(item);
+    if (tone === "new") flags.unshift('<span class="tag item-flag-new">Novo pedido</span>');
+    if (tone === "ready") flags.unshift('<span class="tag item-flag-ready">Pronto para entrega</span>');
     if (!item.delivered && !item.canceled && itemNeedsKitchen(item)) {
       const remMin = Math.ceil(kitchenRemainingMs(item) / 60000);
       flags.push(`<span class="tag">Fila cozinha ~${remMin} min</span>`);
@@ -1695,9 +1819,12 @@
         flags.push(`<span class="tag">${esc(item.kitchenStatusByName)}</span>`);
       }
     }
+    const actionButtons = item.canceled
+      ? ""
+      : `<button class="btn secondary compact-action" data-action="increment-item" data-comanda-id="${comanda.id}" data-item-id="${item.id}">+1</button><button class="btn danger compact-action" data-action="cancel-item" data-comanda-id="${comanda.id}" data-item-id="${item.id}">Devolucao/cancelar</button>`;
 
     return `
-      <div class="item-row">
+      <div class="item-row ${tone ? `item-row-${tone}` : ""}">
         <div><b>${esc(item.name)}</b> x${item.qty} | ${money(item.priceAtSale)} un | Subtotal ${money(Number(item.qty) * Number(item.priceAtSale || 0))}</div>
         <div class="note">Categoria: ${esc(item.category)} | Criado em: ${formatDateTime(item.createdAt)}</div>
         ${item.waiterNote ? `<div class="note">Obs: ${esc(item.waiterNote)}</div>` : ""}
@@ -1705,6 +1832,7 @@
         ${item.canceled ? `<div class="note">Cancelamento: ${esc(item.cancelReason || "-")} ${item.cancelNote ? `| ${esc(item.cancelNote)}` : ""}</div>` : ""}
         <div class="actions">
           ${flags.join(" ")}
+          ${actionButtons}
         </div>
       </div>
     `;
@@ -1743,38 +1871,43 @@
 
   function renderComandaCard(comanda, options = {}) {
     const forceExpanded = Boolean(options.forceExpanded);
+    const forceCollapsed = Boolean(options.forceCollapsed);
     const total = comandaTotal(comanda);
-    const isCollapsed = forceExpanded ? false : isWaiterComandaCollapsed(comanda.id);
+    const isCollapsed = forceExpanded ? false : forceCollapsed ? true : isWaiterComandaCollapsed(comanda.id);
     const isFinalizeOpen = Boolean(uiState.finalizeOpenByComanda[comanda.id]);
     const kitchenIndicator = renderKitchenIndicatorBadge(comanda);
     const validItemsCount = (comanda.items || []).filter((item) => !item.canceled).length;
-    const editableItemsCount = (comanda.items || []).filter((item) => !item.canceled).length;
     const actor = getCurrentUser();
     const canResolveIndicator = actor && actor.role === "waiter" && kitchenIndicator;
+    const canToggleCollapse = !forceExpanded && !forceCollapsed;
+    const draftItems = getWaiterDraftItems(comanda.id);
 
     return `
       <div class="comanda-card ${isCollapsed ? "is-collapsed" : ""} ${forceExpanded ? "is-focused" : ""}">
         <div class="comanda-header">
           <div>
-            <h3>${esc(comanda.id)} <span class="tag">Mesa: ${esc(comanda.table)}</span></h3>
+            ${
+              isCollapsed
+                ? `<div class="comanda-collapsed-title"><span class="comanda-main-id">${esc(comanda.id)}</span><span class="comanda-reference">Referencia: ${esc(comanda.table || "-")}</span></div>`
+                : `<h3>${esc(comanda.id)} <span class="tag">Mesa: ${esc(comanda.table)}</span></h3>`
+            }
             ${kitchenIndicator ? `<div style="margin-top:0.3rem;">${kitchenIndicator}</div>` : ""}
             <p class="note">Cliente: ${esc(comanda.customer || "Nao informado")} | Aberta em ${formatDateTime(comanda.createdAt)}</p>
             <p class="note">Total atual: <b>${money(total)}</b></p>
           </div>
-          ${forceExpanded ? "" : `<button class="btn secondary" data-action="toggle-comanda-collapse" data-comanda-id="${comanda.id}">${isCollapsed ? "Expandir" : "Minimizar"}</button>`}
+          ${canToggleCollapse ? `<button class="btn secondary" data-action="toggle-comanda-collapse" data-comanda-id="${comanda.id}">${isCollapsed ? "Expandir" : "Minimizar"}</button>` : ""}
         </div>
 
         ${!isCollapsed && comanda.notes?.length ? `<div class="note">Obs da comanda: ${comanda.notes.map((n) => esc(n)).join(" | ")}</div>` : ""}
-        ${!isCollapsed && canResolveIndicator ? `<div class="actions indicator-actions"><button class="btn secondary" data-action="resolve-kitchen-indicator" data-comanda-id="${comanda.id}" data-mode="entendi">Entendi o alerta</button><button class="btn ok" data-action="resolve-kitchen-indicator" data-comanda-id="${comanda.id}" data-mode="entregue">Marcar como entregue</button></div>` : ""}
-        ${
-          !isCollapsed && editableItemsCount
-            ? `<div class="actions comanda-item-picker-actions"><button class="btn secondary compact-action" data-action="increment-item-picker" data-comanda-id="${comanda.id}">+1 em item da comanda</button><button class="btn danger compact-action" data-action="cancel-item-picker" data-comanda-id="${comanda.id}">Devolucao/cancelar item</button></div>`
-            : ""
-        }
+        ${!isCollapsed && canResolveIndicator ? `<div class="actions indicator-actions"><button class="btn secondary" data-action="resolve-kitchen-indicator" data-comanda-id="${comanda.id}" data-mode="entendi">Entendi o alerta</button></div>` : ""}
 
         ${
           isCollapsed
-            ? `<div class="note">Itens: <b>${validItemsCount}</b> | Toque em "Expandir" para detalhes.${kitchenIndicator ? " Existe alerta de cozinha pendente." : ""}</div>`
+            ? `<div class="note">Itens: <b>${validItemsCount}</b> | ${forceCollapsed ? "Modo leitura rapida ativado para comandas abertas." : 'Toque em "Expandir" para detalhes.'}${kitchenIndicator ? " Existe alerta de cozinha pendente." : ""}</div>${
+                forceCollapsed
+                  ? `<div class="actions"><button class="btn secondary compact-action" data-action="open-comanda-on-create" data-comanda-id="${comanda.id}">Abrir no painel de pedido</button></div>`
+                  : ""
+              }`
             : `
         <div class="item-list">
           ${(comanda.items || []).length ? (comanda.items || []).map((item) => renderItemRow(comanda, item)).join("") : `<div class="empty">Sem itens ainda.</div>`}
@@ -1818,7 +1951,20 @@
             </div>
           </div>
           <div class="note" data-role="kitchen-estimate">Tempo estimado cozinha: -</div>
-          <button class="btn secondary" type="submit">Adicionar ao pedido</button>
+          ${
+            draftItems.length
+              ? `<div class="card comanda-draft-box"><b>Itens selecionados (${draftItems.length})</b><div class="comanda-draft-list">${draftItems
+                  .map(
+                    (draft, index) =>
+                      `<div class="comanda-draft-row"><span>${esc(draft.category)} | ${esc(state.products.find((p) => p.id === draft.productId && p.category === draft.category)?.name || `Produto ${draft.productId}`)} x${draft.qty}${draft.waiterNote ? ` | Obs: ${esc(draft.waiterNote)}` : ""}${draft.isDelivery ? ` | Entrega: ${esc(draft.deliveryRecipient || "-")} @ ${esc(draft.deliveryLocation || "-")}` : ""}</span><button type="button" class="btn danger compact-action" data-action="remove-draft-item" data-comanda-id="${comanda.id}" data-index="${index}">Remover</button></div>`
+                  )
+                  .join("")}</div></div>`
+              : `<div class="note">Nenhum item selecionado para envio em lote.</div>`
+          }
+          <div class="actions">
+            <button class="btn secondary" type="button" data-action="queue-draft-item" data-comanda-id="${comanda.id}">Selecionar item para lista</button>
+            <button class="btn primary" type="submit">${draftItems.length ? "Adicionar todos os itens selecionados" : "Adicionar item atual"}</button>
+          </div>
         </form>
         `
         }
@@ -1845,6 +1991,15 @@
 
     const sorted = [...state.openComandas].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
     const filtered = sorted.filter((c) => matchesComandaSearch(c, uiState.waiterComandaSearch));
+    let newCount = 0;
+    let readyCount = 0;
+    for (const comanda of filtered) {
+      for (const item of comanda.items || []) {
+        const tone = waiterItemHighlightTone(item);
+        if (tone === "new") newCount += 1;
+        if (tone === "ready") readyCount += 1;
+      }
+    }
 
     return `
       <div class="card">
@@ -1852,9 +2007,39 @@
           <label>Busca por comanda (mesa/referencia/cliente/codigo)</label>
           <input data-role="waiter-search" value="${esc(uiState.waiterComandaSearch)}" placeholder="Ex: Mesa 7, CMD-0001, Joao" />
         </div>
-        <p class="note" style="margin-top:0.5rem;">Comandas ficam minimizadas por padrao para facilitar visualizacao no smartphone.</p>
+        <p class="note" style="margin-top:0.5rem;">No menu de comandas abertas, todas ficam minimizadas para leitura rapida. Destaques: amarelo (pedido novo) e verde (pronto para entrega).</p>
+        <div class="kpis" style="margin-top:0.65rem;">
+          <div class="kpi"><p>Comandas filtradas</p><b>${filtered.length}</b></div>
+          <div class="kpi"><p>Pedidos novos</p><b>${newCount}</b></div>
+          <div class="kpi"><p>Prontos para entrega</p><b>${readyCount}</b></div>
+        </div>
       </div>
-      ${filtered.length ? `<div class="comanda-grid" style="margin-top:1rem;">${filtered.map((c) => renderComandaCard(c)).join("")}</div>` : `<div class="empty" style="margin-top:1rem;">Nenhuma comanda encontrada para a busca.</div>`}
+      ${filtered.length ? `<div class="comanda-grid" style="margin-top:1rem;">${filtered.map((c) => renderComandaCard(c, { forceCollapsed: true })).join("")}</div>` : `<div class="empty" style="margin-top:1rem;">Nenhuma comanda encontrada para a busca.</div>`}
+    `;
+  }
+
+  function renderWaiterReadyModal() {
+    const rows = uiState.waiterReadyModalItems || [];
+    if (!rows.length) return "";
+    return `
+      <div class="waiter-ready-modal-backdrop">
+        <div class="card waiter-ready-modal">
+          <h3>Pedido pronto para entrega</h3>
+          <p class="note" style="margin-top:0.35rem;">A cozinha marcou os itens abaixo como entregues. Eles ficam em verde ate voce confirmar a entrega ao cliente.</p>
+          <div class="waiter-ready-list" style="margin-top:0.65rem;">
+            ${rows
+              .map(
+                (row) =>
+                  `<div class="waiter-ready-item"><b>${esc(row.itemName)}</b> x${row.qty} | Comanda <b>${esc(row.comandaId)}</b> | Referencia ${esc(row.table || "-")}${row.deliveryRequested ? `<div class="note">Entrega: ${esc(row.deliveryRecipient || "-")} | ${esc(row.deliveryLocation || "-")}</div>` : ""}</div>`
+              )
+              .join("")}
+          </div>
+          <div class="actions" style="margin-top:0.75rem;">
+            <button class="btn secondary" data-action="waiter-ready-go-open">Ir para comandas abertas</button>
+            <button class="btn ok" data-action="close-waiter-ready-modal">Fechar aviso</button>
+          </div>
+        </div>
+      </div>
     `;
   }
 
@@ -1951,33 +2136,21 @@
       <div class="grid cols-2">
         <div class="card">
           <h3>Historico de Alteracoes (imutavel)</h3>
+          <p class="note" style="margin-top:0.35rem;">Tipos de evento estao traduzidos para facilitar leitura rapida.</p>
           <details class="compact-details" style="margin-top:0.75rem;">
             <summary>Ver alteracoes (${todayAudit.length})</summary>
             ${todayAudit.length
-              ? `<div class="table-wrap" style="margin-top:0.55rem;"><table><thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th></tr></thead><tbody>${todayAudit
+              ? `<div class="table-wrap" style="margin-top:0.55rem;"><table class="history-table"><thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th></tr></thead><tbody>${todayAudit
                   .map(
-                    (e) => `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName)}</td><td>${esc(e.type)}</td><td>${esc(e.comandaId || "-")}</td><td>${esc(e.detail)}</td></tr>`
+                    (e) => `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName)}</td><td>${renderEventTypeTag(e.type)}</td><td>${esc(e.comandaId || "-")}</td><td>${esc(e.detail)}</td></tr>`
                   )
                   .join("")}</tbody></table></div>`
               : `<div class="empty" style="margin-top:0.55rem;">Sem eventos ainda.</div>`}
           </details>
         </div>
-        <div class="card">
-          <h3>Comandas Finalizadas Hoje</h3>
-          <details class="compact-details" style="margin-top:0.75rem;">
-            <summary>Ver finalizadas (${closed.length})</summary>
-            ${closed.length
-              ? `<div class="table-wrap" style="margin-top:0.55rem;"><table><thead><tr><th>Comanda</th><th>Cliente</th><th>Total</th><th>Pagamento</th><th>Fechada em</th><th>Abrir</th></tr></thead><tbody>${closed
-                  .map(
-                    (c) =>
-                      `<tr><td>${esc(c.id)}</td><td>${esc(c.customer || "-")}</td><td>${money(comandaTotal(c))}</td><td>${esc(paymentLabel(c.payment?.method || "-"))}</td><td>${formatDateTime(c.closedAt)}</td><td><button class="btn secondary" data-action="open-comanda-details" data-comanda-id="${c.id}">Ver</button></td></tr>`
-                  )
-                  .join("")}</tbody></table></div>`
-              : `<div class="empty" style="margin-top:0.55rem;">Ainda sem comandas finalizadas.</div>`}
-          </details>
-          ${renderComandaDetailsBox()}
-        </div>
+        ${renderComandaRecordsCompact(closed, { title: "Comandas Finalizadas (minimizadas)", limit: 150 })}
       </div>
+      ${renderComandaDetailsBox()}
     `;
   }
 
@@ -2107,6 +2280,7 @@
         ${renderTopBar(user)}
         ${renderTabs("waiter", tabs, uiState.waiterTab)}
         ${content}
+        ${renderWaiterReadyModal()}
       </div>
     `;
   }
@@ -2123,6 +2297,8 @@
     } else if (user.role === "cook") {
       renderCook(user);
     } else {
+      pruneWaiterDraftItems();
+      syncWaiterReadyModal();
       renderWaiter(user);
     }
 
@@ -2358,6 +2534,8 @@
         item.waiterDeliveredAt = isoNow();
         item.waiterDeliveredById = actor.id;
         item.waiterDeliveredByName = actor.name;
+        item.waiterVisualState = "";
+        item.waiterVisualUpdatedAt = isoNow();
       }
       resolvedCount += 1;
     }
@@ -2409,6 +2587,197 @@
     render();
   }
 
+  function waiterDraftKey(comandaId) {
+    return String(comandaId || "");
+  }
+
+  function getWaiterDraftItems(comandaId) {
+    const key = waiterDraftKey(comandaId);
+    uiState.waiterDraftByComanda = uiState.waiterDraftByComanda || {};
+    if (!Array.isArray(uiState.waiterDraftByComanda[key])) {
+      uiState.waiterDraftByComanda[key] = [];
+    }
+    return uiState.waiterDraftByComanda[key];
+  }
+
+  function clearWaiterDraftItems(comandaId) {
+    const key = waiterDraftKey(comandaId);
+    if (uiState.waiterDraftByComanda?.[key]) {
+      delete uiState.waiterDraftByComanda[key];
+    }
+  }
+
+  function pruneWaiterDraftItems() {
+    const openIds = new Set(state.openComandas.map((comanda) => waiterDraftKey(comanda.id)));
+    for (const key of Object.keys(uiState.waiterDraftByComanda || {})) {
+      if (!openIds.has(key)) {
+        delete uiState.waiterDraftByComanda[key];
+      }
+    }
+  }
+
+  function parseItemDraftFromForm(form) {
+    const category = form.category.value;
+    const productId = Number(form.productId.value || 0);
+    const qty = Math.max(1, Number(form.qty.value || 1));
+    const waiterNote = form.waiterNote.value.trim();
+    const isDeliveryRaw = Boolean(form.isDelivery?.checked);
+    const deliveryRecipient = String(form.deliveryRecipient?.value || "").trim();
+    const deliveryLocation = String(form.deliveryLocation?.value || "").trim();
+
+    const product = state.products.find((p) => p.id === productId && p.category === category);
+    if (!product) {
+      return { error: "Produto invalido." };
+    }
+    if (product.available === false) {
+      return { error: `Produto ${product.name} esta indisponivel no cardapio.` };
+    }
+
+    const needsKitchen = productNeedsKitchen(product);
+    const isDelivery = needsKitchen && isDeliveryRaw;
+    if (needsKitchen && isDelivery && (!deliveryRecipient || !deliveryLocation)) {
+      return { error: "Para entrega, informe quem recebe e o local de entrega." };
+    }
+
+    return {
+      value: {
+        category,
+        productId: product.id,
+        qty,
+        waiterNote,
+        needsKitchen,
+        isDelivery,
+        deliveryRecipient: isDelivery ? deliveryRecipient : "",
+        deliveryLocation: isDelivery ? deliveryLocation : ""
+      }
+    };
+  }
+
+  function validateDraftBatch(drafts) {
+    const qtyByProduct = {};
+    for (const draft of drafts) {
+      const key = `${draft.category}::${draft.productId}`;
+      qtyByProduct[key] = (qtyByProduct[key] || 0) + Number(draft.qty || 0);
+    }
+
+    const errors = [];
+    for (const key of Object.keys(qtyByProduct)) {
+      const [category, productIdRaw] = key.split("::");
+      const productId = Number(productIdRaw);
+      const requestedQty = qtyByProduct[key];
+      const product = state.products.find((p) => p.id === productId && p.category === category);
+      if (!product) {
+        errors.push(`Produto ${productId} da categoria ${category} nao foi encontrado.`);
+        continue;
+      }
+      if (product.available === false) {
+        errors.push(`Produto ${product.name} esta indisponivel no cardapio.`);
+        continue;
+      }
+      if (Number(product.stock || 0) < requestedQty) {
+        errors.push(`Estoque insuficiente para ${product.name}. Solicitado: ${requestedQty}, disponivel: ${product.stock}.`);
+      }
+    }
+    return errors;
+  }
+
+  function appendDraftItemToComanda(comanda, actor, draft) {
+    const product = state.products.find((p) => p.id === draft.productId && p.category === draft.category);
+    if (!product) return;
+
+    product.stock -= Number(draft.qty || 0);
+    const waitingBefore = totalKitchenQueueMs();
+    const qty = Number(draft.qty || 0);
+
+    const item = {
+      id: `IT-${String(state.seq.item++).padStart(5, "0")}`,
+      productId: product.id,
+      name: product.name,
+      category: product.category,
+      qty,
+      priceAtSale: Number(product.price),
+      costAtSale: Number(product.cost || 0),
+      prepTimeAtSale: Number(product.prepTime || 0),
+      requiresKitchen: Boolean(product.requiresKitchen),
+      needsKitchen: Boolean(draft.needsKitchen),
+      waiterNote: draft.waiterNote || "",
+      noteType: "",
+      createdAt: isoNow(),
+      delivered: false,
+      deliveredAt: null,
+      kitchenStatus: draft.needsKitchen ? "fila" : "",
+      kitchenStatusAt: draft.needsKitchen ? isoNow() : null,
+      kitchenStatusById: null,
+      kitchenStatusByName: "",
+      kitchenAlertUnread: Boolean(draft.needsKitchen),
+      waiterVisualState: "new",
+      waiterVisualUpdatedAt: isoNow(),
+      deliveryRequested: Boolean(draft.isDelivery),
+      deliveryRecipient: draft.isDelivery ? draft.deliveryRecipient || "" : "",
+      deliveryLocation: draft.isDelivery ? draft.deliveryLocation || "" : "",
+      canceled: false,
+      canceledAt: null,
+      cancelReason: "",
+      cancelNote: ""
+    };
+
+    if (itemNeedsKitchen(item)) {
+      const prepMs = item.prepTimeAtSale * qty * 60 * 1000;
+      item.etaAt = new Date(Date.now() + waitingBefore + prepMs).toISOString();
+      comanda.kitchenAlertUnread = true;
+    }
+
+    comanda.items.push(item);
+    const kitchenInfo = itemNeedsKitchen(item) ? ` Tempo estimado: ${Math.ceil((waitingBefore + item.prepTimeAtSale * qty * 60000) / 60000)} min.` : "";
+    const deliveryInfo = item.deliveryRequested ? ` Entrega para ${item.deliveryRecipient} em ${item.deliveryLocation}.` : "";
+    appendComandaEvent(comanda, {
+      actor,
+      type: "item_add",
+      detail: `Item ${item.name} x${qty} adicionado.${kitchenInfo}${deliveryInfo}`,
+      reason: "",
+      itemId: item.id
+    });
+  }
+
+  function queueComandaDraftItem(form) {
+    const comandaId = form.dataset.comandaId;
+    const comanda = findOpenComanda(comandaId);
+    if (!comanda) {
+      alert("Comanda nao encontrada.");
+      return;
+    }
+
+    const parsed = parseItemDraftFromForm(form);
+    if (parsed.error) {
+      alert(parsed.error);
+      return;
+    }
+
+    const draftItems = getWaiterDraftItems(comandaId);
+    draftItems.push(parsed.value);
+
+    form.qty.value = "1";
+    form.waiterNote.value = "";
+    if (form.isDelivery) form.isDelivery.checked = false;
+    if (form.deliveryRecipient) form.deliveryRecipient.value = "";
+    if (form.deliveryLocation) form.deliveryLocation.value = "";
+
+    updateDeliveryFields(form);
+    updateKitchenEstimate(form);
+    render();
+  }
+
+  function removeComandaDraftItem(comandaId, index) {
+    const items = getWaiterDraftItems(comandaId);
+    const idx = Number(index);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= items.length) return;
+    items.splice(idx, 1);
+    if (!items.length) {
+      clearWaiterDraftItems(comandaId);
+    }
+    render();
+  }
+
   function login(login, password) {
     const user = findUserByLoginPassword(login, password);
     if (!user) {
@@ -2426,6 +2795,9 @@
     sessionUserId = null;
     persistSessionUserId(null);
     uiState.waiterActiveComandaId = null;
+    uiState.waiterReadyModalItems = [];
+    uiState.waiterReadySeenMap = {};
+    uiState.waiterDraftByComanda = {};
     saveState({ skipCloud: true, touchMeta: false });
     render();
   }
@@ -2694,7 +3066,7 @@
 
     uiState.waiterTab = "abrir";
     uiState.waiterActiveComandaId = comanda.id;
-    uiState.waiterCollapsedByComanda[comanda.id] = false;
+    uiState.waiterCollapsedByComanda[comanda.id] = true;
     saveState();
     render();
   }
@@ -2762,6 +3134,8 @@
         kitchenStatusById: null,
         kitchenStatusByName: "",
         kitchenAlertUnread: true,
+        waiterVisualState: "new",
+        waiterVisualUpdatedAt: isoNow(),
         deliveryRequested: isDelivery,
         deliveryRecipient: isDelivery ? deliveryRecipient : "",
         deliveryLocation: isDelivery ? deliveryLocation : "",
@@ -2812,7 +3186,7 @@
       });
       if (actor.role === "waiter") {
         uiState.waiterTab = "abertas";
-        uiState.waiterCollapsedByComanda[saleComanda.id] = false;
+        uiState.waiterCollapsedByComanda[saleComanda.id] = true;
         uiState.waiterActiveComandaId = saleComanda.id;
       }
       saveState();
@@ -2900,88 +3274,35 @@
       return;
     }
 
-    const category = form.category.value;
-    const productId = Number(form.productId.value || 0);
-    const qty = Math.max(1, Number(form.qty.value || 1));
-    const waiterNote = form.waiterNote.value.trim();
-    const isDeliveryRaw = Boolean(form.isDelivery?.checked);
-    const deliveryRecipient = String(form.deliveryRecipient?.value || "").trim();
-    const deliveryLocation = String(form.deliveryLocation?.value || "").trim();
+    const queued = getWaiterDraftItems(comandaId);
+    let draftsToAdd = [];
+    if (queued.length) {
+      draftsToAdd = queued.map((draft) => ({ ...draft }));
+    } else {
+      const parsed = parseItemDraftFromForm(form);
+      if (parsed.error) {
+        alert(parsed.error);
+        return;
+      }
+      draftsToAdd = [parsed.value];
+    }
 
-    const product = state.products.find((p) => p.id === productId && p.category === category);
-    if (!product) {
-      alert("Produto invalido.");
-      return;
-    }
-    if (product.available === false) {
-      alert(`Produto ${product.name} esta indisponivel no cardapio.`);
-      return;
-    }
-    const needsKitchen = productNeedsKitchen(product);
-    const isDelivery = needsKitchen && isDeliveryRaw;
-
-    if (product.stock < qty) {
-      alert(`Estoque insuficiente para ${product.name}. Disponivel: ${product.stock}`);
-      return;
-    }
-    if (needsKitchen && isDelivery && (!deliveryRecipient || !deliveryLocation)) {
-      alert("Para entrega, informe quem recebe e o local de entrega.");
+    const validationErrors = validateDraftBatch(draftsToAdd);
+    if (validationErrors.length) {
+      alert(`Nao foi possivel adicionar os itens:\n- ${validationErrors.slice(0, 5).join("\n- ")}`);
       return;
     }
 
-    product.stock -= qty;
-
-    const waitingBefore = totalKitchenQueueMs();
-
-    const item = {
-      id: `IT-${String(state.seq.item++).padStart(5, "0")}`,
-      productId: product.id,
-      name: product.name,
-      category: product.category,
-      qty,
-      priceAtSale: Number(product.price),
-      costAtSale: Number(product.cost || 0),
-      prepTimeAtSale: Number(product.prepTime || 0),
-      requiresKitchen: Boolean(product.requiresKitchen),
-      needsKitchen,
-      waiterNote,
-      noteType: "",
-      createdAt: isoNow(),
-      delivered: false,
-      deliveredAt: null,
-      kitchenStatus: needsKitchen ? "fila" : "",
-      kitchenStatusAt: needsKitchen ? isoNow() : null,
-      kitchenStatusById: null,
-      kitchenStatusByName: "",
-      kitchenAlertUnread: needsKitchen,
-      deliveryRequested: isDelivery,
-      deliveryRecipient: isDelivery ? deliveryRecipient : "",
-      deliveryLocation: isDelivery ? deliveryLocation : "",
-      canceled: false,
-      canceledAt: null,
-      cancelReason: "",
-      cancelNote: ""
-    };
-
-    if (itemNeedsKitchen(item)) {
-      const prepMs = item.prepTimeAtSale * qty * 60 * 1000;
-      item.etaAt = new Date(Date.now() + waitingBefore + prepMs).toISOString();
+    for (const draft of draftsToAdd) {
+      appendDraftItemToComanda(comanda, actor, draft);
     }
 
-    comanda.items.push(item);
-    if (itemNeedsKitchen(item)) {
-      comanda.kitchenAlertUnread = true;
-    }
-
-    const kitchenInfo = itemNeedsKitchen(item) ? ` Tempo estimado: ${Math.ceil((waitingBefore + item.prepTimeAtSale * qty * 60000) / 60000)} min.` : "";
-    const deliveryInfo = item.deliveryRequested ? ` Entrega para ${item.deliveryRecipient} em ${item.deliveryLocation}.` : "";
-    appendComandaEvent(comanda, {
-      actor,
-      type: "item_add",
-      detail: `Item ${item.name} x${qty} adicionado.${kitchenInfo}${deliveryInfo}`,
-      reason: "",
-      itemId: item.id
-    });
+    clearWaiterDraftItems(comandaId);
+    form.qty.value = "1";
+    form.waiterNote.value = "";
+    if (form.isDelivery) form.isDelivery.checked = false;
+    if (form.deliveryRecipient) form.deliveryRecipient.value = "";
+    if (form.deliveryLocation) form.deliveryLocation.value = "";
 
     saveState();
     render();
@@ -3008,6 +3329,8 @@
     product.stock -= 1;
     item.qty = Number(item.qty || 0) + 1;
     item.lastIncrementAt = isoNow();
+    item.waiterVisualState = "new";
+    item.waiterVisualUpdatedAt = isoNow();
 
     appendComandaEvent(comanda, {
       actor,
@@ -3018,50 +3341,6 @@
 
     saveState();
     render();
-  }
-
-  function pickComandaItemByPrompt(comanda, mode = "increment") {
-    const candidates = (comanda.items || []).filter((item) => {
-      if (item.canceled) return false;
-      if (mode === "cancel") return true;
-      return true;
-    });
-    if (!candidates.length) {
-      alert("Nao ha itens validos nessa comanda.");
-      return null;
-    }
-
-    const title = mode === "cancel" ? "Escolha o item para devolucao/cancelamento:" : "Escolha o item para adicionar +1:";
-    const list = candidates
-      .map(
-        (item, idx) =>
-          `${idx + 1} - ${item.name} x${item.qty}${itemNeedsKitchen(item) ? ` [${kitchenStatusLabel(item.kitchenStatus || "fila")}]` : ""}`
-      )
-      .join("\n");
-    const answer = prompt(`${title}\n\n${list}\n\nDigite o numero do item:`, "1");
-    if (answer === null) return null;
-    const index = Number(answer) - 1;
-    if (!Number.isInteger(index) || index < 0 || index >= candidates.length) {
-      alert("Opcao invalida. Informe o numero exibido na lista.");
-      return null;
-    }
-    return candidates[index].id;
-  }
-
-  function incrementItemPicker(comandaId) {
-    const comanda = findOpenComanda(comandaId);
-    if (!comanda) return;
-    const itemId = pickComandaItemByPrompt(comanda, "increment");
-    if (!itemId) return;
-    incrementItem(comandaId, itemId);
-  }
-
-  function cancelItemPicker(comandaId) {
-    const comanda = findOpenComanda(comandaId);
-    if (!comanda) return;
-    const itemId = pickComandaItemByPrompt(comanda, "cancel");
-    if (!itemId) return;
-    cancelItem(comandaId, itemId);
   }
 
   function setKitchenItemStatus(comandaId, itemId, status) {
@@ -3088,6 +3367,8 @@
     if (status === "entregue") {
       item.delivered = true;
       item.deliveredAt = isoNow();
+      item.waiterVisualState = "ready";
+      item.waiterVisualUpdatedAt = isoNow();
       state.cookHistory = state.cookHistory || [];
       state.cookHistory.unshift({
         id: `KHS-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -3106,6 +3387,9 @@
         deliveryRecipient: item.deliveryRecipient || "",
         deliveryLocation: item.deliveryLocation || ""
       });
+    } else if (item.waiterVisualState === "new" || item.waiterVisualState === "ready") {
+      item.waiterVisualState = "";
+      item.waiterVisualUpdatedAt = isoNow();
     }
 
     appendComandaEvent(comanda, {
@@ -3128,6 +3412,7 @@
         });
         state.openComandas = state.openComandas.filter((c) => c.id !== comanda.id);
         state.closedComandas.unshift(comanda);
+        clearWaiterDraftItems(comanda.id);
         delete uiState.finalizeOpenByComanda[comanda.id];
         if (uiState.waiterActiveComandaId === comanda.id) {
           uiState.waiterActiveComandaId = null;
@@ -3153,6 +3438,8 @@
 
     item.delivered = true;
     item.deliveredAt = isoNow();
+    item.waiterVisualState = "";
+    item.waiterVisualUpdatedAt = isoNow();
 
     appendComandaEvent(comanda, {
       actor,
@@ -3183,6 +3470,8 @@
     item.cancelReason = reason;
     item.cancelNote = note;
     item.kitchenAlertUnread = false;
+    item.waiterVisualState = "";
+    item.waiterVisualUpdatedAt = isoNow();
 
     const product = state.products.find((p) => p.id === item.productId);
     if (product) {
@@ -3297,6 +3586,7 @@
 
     state.openComandas = state.openComandas.filter((c) => c.id !== comanda.id);
     state.closedComandas.unshift(comanda);
+    clearWaiterDraftItems(comanda.id);
 
     if (uiState.waiterActiveComandaId === comanda.id) {
       uiState.waiterActiveComandaId = null;
@@ -3534,6 +3824,29 @@
       return;
     }
 
+    if (action === "close-waiter-ready-modal") {
+      uiState.waiterReadyModalItems = [];
+      render();
+      return;
+    }
+
+    if (action === "waiter-ready-go-open") {
+      uiState.waiterTab = "abertas";
+      uiState.waiterReadyModalItems = [];
+      render();
+      return;
+    }
+
+    if (action === "open-comanda-on-create") {
+      const comandaId = button.dataset.comandaId;
+      if (comandaId) {
+        uiState.waiterActiveComandaId = comandaId;
+        uiState.waiterTab = "abrir";
+      }
+      render();
+      return;
+    }
+
     if (action === "edit-product") {
       editProduct(Number(button.dataset.id));
       return;
@@ -3589,13 +3902,15 @@
       return;
     }
 
-    if (action === "increment-item-picker") {
-      incrementItemPicker(button.dataset.comandaId);
+    if (action === "queue-draft-item") {
+      const form = button.closest('form[data-role="add-item-form"]');
+      if (!form) return;
+      queueComandaDraftItem(form);
       return;
     }
 
-    if (action === "cancel-item-picker") {
-      cancelItemPicker(button.dataset.comandaId);
+    if (action === "remove-draft-item") {
+      removeComandaDraftItem(button.dataset.comandaId, Number(button.dataset.index));
       return;
     }
 
