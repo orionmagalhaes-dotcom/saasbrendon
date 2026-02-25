@@ -4,6 +4,7 @@
 (() => {
   const STORAGE_KEY = "restobar_control_v1";
   const SESSION_KEY = "restobar_local_session_user";
+  const PRINTER_PREFS_KEY = "restobar_local_printer_prefs_v1";
   const ESTABLISHMENT_NAME = "Brancao";
   const CATEGORIES = ["Bar", "Cozinha", "Espetinhos", "Avulso", "Ofertas"];
   const BAR_SUBCATEGORIES = ["Doses/Copo", "Geral"];
@@ -15,6 +16,7 @@
   ];
   const KITCHEN_PRIORITIES = [
     { value: "normal", label: "Normal" },
+    { value: "comum", label: "Comum" },
     { value: "alta", label: "Prioridade alta" },
     { value: "maxima", label: "Prioridade maxima" }
   ];
@@ -46,6 +48,7 @@
     cookTab: "ativos",
     finalizeOpenByComanda: {},
     waiterCollapsedByComanda: {},
+    adminKitchenCollapsedByRow: {},
     waiterActiveComandaId: null,
     deferredPrompt: null,
     monitorWaiterId: "all",
@@ -68,7 +71,10 @@
       open: false,
       comandaId: "",
       mode: "increment"
-    }
+    },
+    quickSalePaidConfirm: true,
+    printerPrefs: loadPrinterPrefs(),
+    qzSecurityConfigured: false
   };
 
   function isoNow() {
@@ -133,6 +139,33 @@
 
   function detailOpenAttr(key, defaultOpen = false) {
     return isDetailOpen(key, defaultOpen) ? " open" : "";
+  }
+
+  function formCheckboxChecked(form, name, fallback = false) {
+    if (!form || !name) return Boolean(fallback);
+    const input = form.querySelector(`input[name="${name}"]`);
+    if (!input) return Boolean(fallback);
+    return Boolean(input.checked);
+  }
+
+  function kitchenRowCollapseKey(comandaId, itemId) {
+    return detailKey("admin-kitchen-row", comandaId, itemId);
+  }
+
+  function isAdminKitchenRowCollapsed(comandaId, itemId) {
+    const key = kitchenRowCollapseKey(comandaId, itemId);
+    if (!key) return false;
+    return Boolean(uiState.adminKitchenCollapsedByRow[key]);
+  }
+
+  function setAdminKitchenRowCollapsed(comandaId, itemId, collapsed) {
+    const key = kitchenRowCollapseKey(comandaId, itemId);
+    if (!key) return;
+    if (collapsed) {
+      uiState.adminKitchenCollapsedByRow[key] = true;
+    } else {
+      delete uiState.adminKitchenCollapsedByRow[key];
+    }
   }
 
   function parseNumber(input) {
@@ -284,7 +317,7 @@
       category,
       requiresKitchen,
       needsKitchen,
-      kitchenPriority: needsKitchen && ["normal", "alta", "maxima"].includes(kitchenPriority) ? kitchenPriority : needsKitchen ? "normal" : "",
+      kitchenPriority: needsKitchen && ["normal", "comum", "alta", "maxima"].includes(kitchenPriority) ? kitchenPriority : needsKitchen ? "normal" : "",
       kitchenPriorityById: item.kitchenPriorityById || null,
       kitchenPriorityByName: item.kitchenPriorityByName || "",
       kitchenPriorityAt: item.kitchenPriorityAt || null,
@@ -390,6 +423,28 @@
       return;
     }
     localStorage.removeItem(SESSION_KEY);
+  }
+
+  function normalizePrinterPrefs(source) {
+    const parsed = source && typeof source === "object" ? source : {};
+    return {
+      kitchenDirectEnabled: parsed.kitchenDirectEnabled === true,
+      kitchenPrinterName: String(parsed.kitchenPrinterName || "").trim()
+    };
+  }
+
+  function loadPrinterPrefs() {
+    const raw = localStorage.getItem(PRINTER_PREFS_KEY);
+    if (!raw) return normalizePrinterPrefs(null);
+    try {
+      return normalizePrinterPrefs(JSON.parse(raw));
+    } catch (_err) {
+      return normalizePrinterPrefs(null);
+    }
+  }
+
+  function persistPrinterPrefs() {
+    localStorage.setItem(PRINTER_PREFS_KEY, JSON.stringify(normalizePrinterPrefs(uiState.printerPrefs)));
   }
 
   function sanitizeStateForCloud(source) {
@@ -1711,6 +1766,9 @@
     const opened = monitorComandas.filter((c) => c.status !== "finalizada");
     const finalized = monitorComandas.filter((c) => c.status === "finalizada");
     const monitorEventsDetailsKey = detailKey("admin-monitor", "events");
+    const printerName = String(uiState.printerPrefs?.kitchenPrinterName || "");
+    const directPrintEnabled = Boolean(uiState.printerPrefs?.kitchenDirectEnabled);
+    const qzAvailable = qzLibraryAvailable();
 
     return `
       <div class="grid cols-2">
@@ -1736,7 +1794,7 @@
           </div>
           <div class="kitchen-monitor-panel" style="margin-top:0.8rem;">
             <h4>Painel da Cozinha (acao em tempo real)</h4>
-            <p class="note" style="margin-top:0.25rem;">Administrador acompanha itens da cozinha com dados do garcom, define prioridade (normal/alta/maxima) e atualiza status para Cozinhando, Em falta ou Entregue.</p>
+            <p class="note" style="margin-top:0.25rem;">Administrador acompanha itens da cozinha com dados do garcom, define prioridade (normal/alta/maxima) ou ignora como comum, e atualiza status para Cozinhando, Em falta ou Entregue.</p>
             <div class="field" style="margin-top:0.55rem;">
               <label>Busca da cozinha</label>
               <input data-role="admin-kitchen-search" value="${esc(uiState.adminKitchenSearch)}" placeholder="Comanda, mesa, cliente, item, observacao ou garcom" />
@@ -1747,6 +1805,23 @@
               <div class="kpi"><p>Em falta</p><b>${kitchenMissing}</b></div>
             </div>
             ${renderKitchenOpsBoard(kitchenRows, { emptyMessage: "Sem pedidos ativos na cozinha para o filtro aplicado." })}
+          </div>
+          <div class="card" style="margin-top:0.75rem;">
+            <h4>Impressora da cozinha</h4>
+            <p class="note">Integra o envio instantaneo de cupom via QZ Tray. Se falhar, usa o popup de impressao.</p>
+            <div class="field" style="margin-top:0.45rem;">
+              <label><input type="checkbox" data-role="kitchen-direct-enabled" ${directPrintEnabled ? "checked" : ""} /> Habilitar impressao direta (sem dialogo)</label>
+            </div>
+            <div class="field" style="margin-top:0.45rem;">
+              <label>Nome da impressora da cozinha (opcional)</label>
+              <input data-role="kitchen-printer-name" value="${esc(printerName)}" placeholder="Ex.: EPSON TM-T20III" />
+            </div>
+            <div class="actions" style="margin-top:0.45rem;">
+              <button class="btn secondary compact-action" data-action="save-kitchen-printer-config">Salvar impressora</button>
+              <button class="btn secondary compact-action" data-action="test-kitchen-printer">Imprimir teste</button>
+            </div>
+            <p class="note" style="margin-top:0.35rem;">Status QZ Tray: <b>${qzAvailable ? "detectado no navegador" : "nao detectado (instale e abra o QZ Tray)"}</b></p>
+            <p class="note">Se o campo da impressora ficar vazio, o sistema usa a impressora padrao do computador da cozinha.</p>
           </div>
           ${monitorComandas.length
             ? `<div class="table-wrap monitor-table-wrap" style="margin-top:0.75rem;"><table class="monitor-table"><thead><tr><th>Comanda</th><th>Local</th><th>Cliente</th><th>Situacao</th><th>Atualizacao</th><th>Total</th><th>Acoes</th></tr></thead><tbody>${monitorComandas
@@ -1998,7 +2073,7 @@
               </div>
             </div>
             <div class="field">
-              <label><input name="paidConfirm" type="checkbox" /> Venda paga e conferida</label>
+              <label><input name="paidConfirm" type="checkbox" ${uiState.quickSalePaidConfirm ? "checked" : ""} /> Venda paga e conferida</label>
             </div>
             <div class="note" data-role="quick-kitchen-note">Para categorias fora de cozinha, a venda fecha imediatamente.</div>
             <button class="btn primary" type="submit">Finalizar Venda Avulsa</button>
@@ -2054,7 +2129,7 @@
     return `
       <form class="card form" data-role="finalize-form" data-comanda-id="${comanda.id}">
         <h4>Finalizacao da comanda ${esc(comanda.id)}</h4>
-        <div class="note">Confira dados, escolha pagamento e confirme apos validar manualmente com cliente.</div>
+        <div class="note">Confira dados e escolha o pagamento. Em fiado, a confirmacao manual de pagamento nao e obrigatoria.</div>
         <div class="field">
           <label>Pagamento</label>
           <select name="paymentMethod" data-role="payment-method">
@@ -2072,8 +2147,9 @@
             <div class="note" data-role="pix-code"></div>
           </div>
         </div>
-        <div class="field">
-          <label><input type="checkbox" name="manualCheck" /> Pagamento conferido manualmente com cliente</label>
+        <div class="field" data-role="manual-check-box">
+          <label><input type="checkbox" name="manualCheck" data-role="manual-check" /> Pagamento conferido manualmente com cliente</label>
+          <div class="note" data-role="manual-check-note" style="display:none;">No fiado, essa confirmacao e dispensada.</div>
         </div>
         <div class="note"><b>Valor total:</b> ${money(comandaTotal(comanda))}</div>
         <button class="btn ok" type="submit">Confirmar finalizacao</button>
@@ -2440,6 +2516,7 @@
   function renderKitchenOpsBoard(rows, options = {}) {
     const actor = getCurrentUser();
     const canManagePriority = actor?.role === "admin";
+    const canCollapseRows = actor?.role === "admin";
     const emptyMessage = options.emptyMessage || "Sem pedidos ativos na cozinha.";
     if (!rows.length) {
       return `<div class="empty" style="margin-top:0.75rem;">${esc(emptyMessage)}</div>`;
@@ -2463,9 +2540,10 @@
             const priorityBy = row.item.kitchenPriorityByName || "-";
             const queueInfo = kitchenRemainingLabel(row.item);
             const rowDetailsKey = detailKey("kitchen-row", row.comanda.id, row.item.id);
+            const isCollapsed = canCollapseRows ? isAdminKitchenRowCollapsed(row.comanda.id, row.item.id) : false;
 
             return `
-              <div class="kitchen-order-card status-${statusClass}">
+              <div class="kitchen-order-card status-${statusClass} ${isCollapsed ? "is-collapsed" : ""}">
                 <div class="kitchen-order-head">
                   <div>
                     <h4>${esc(row.item.name)} x${row.item.qty}</h4>
@@ -2478,7 +2556,14 @@
                     </div>
                     <p class="note">Cliente ${esc(row.comanda.customer || "-")}</p>
                   </div>
-                  <span class="kitchen-order-status ${statusClass}">${esc(statusLabel)}</span>
+                  <div class="kitchen-order-head-actions">
+                    <span class="kitchen-order-status ${statusClass}">${esc(statusLabel)}</span>
+                    ${
+                      canCollapseRows
+                        ? `<button class="btn secondary compact-action kitchen-collapse-toggle" data-action="toggle-kitchen-row-collapse" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}">${isCollapsed ? "Expandir" : "Minimizar"}</button>`
+                        : ""
+                    }
+                  </div>
                 </div>
                 <div class="kitchen-order-meta kitchen-order-meta-main">
                   <div class="kitchen-meta-box meta-responsible"><span>Responsavel</span><b>${esc(responsible)}</b></div>
@@ -2488,9 +2573,10 @@
                 </div>
                 ${
                   canManagePriority
-                    ? `<div class="kitchen-priority-actions"><button class="btn secondary compact-action ${priority === "normal" ? "is-active" : ""}" data-action="kitchen-priority" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-priority="normal" ${priority === "normal" ? "disabled" : ""} title="Normal">Normal</button><button class="btn warn compact-action ${priority === "alta" ? "is-active" : ""}" data-action="kitchen-priority" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-priority="alta" ${priority === "alta" ? "disabled" : ""} title="Prioridade alta">Alta</button><button class="btn danger compact-action ${priority === "maxima" ? "is-active" : ""}" data-action="kitchen-priority" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-priority="maxima" ${priority === "maxima" ? "disabled" : ""} title="Prioridade maxima">Maxima</button></div>`
+                    ? `<div class="kitchen-priority-actions"><button class="btn secondary compact-action ${priority === "normal" ? "is-active" : ""}" data-action="kitchen-priority" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-priority="normal" ${priority === "normal" ? "disabled" : ""} title="Normal">Normal</button><button class="btn warn compact-action ${priority === "alta" ? "is-active" : ""}" data-action="kitchen-priority" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-priority="alta" ${priority === "alta" ? "disabled" : ""} title="Prioridade alta">Alta</button><button class="btn danger compact-action ${priority === "maxima" ? "is-active" : ""}" data-action="kitchen-priority" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-priority="maxima" ${priority === "maxima" ? "disabled" : ""} title="Prioridade maxima">Maxima</button><button class="btn secondary compact-action kitchen-priority-ignore ${priority === "comum" ? "is-active" : ""}" data-action="kitchen-priority" data-comanda-id="${row.comanda.id}" data-item-id="${row.item.id}" data-priority="comum" ${priority === "comum" ? "disabled" : ""} title="Ignorar prioridade e manter como comum">Ignorar</button></div>`
                     : `<div class="note"><b>Prioridade:</b> ${esc(priorityLabel)}</div>`
                 }
+                <div class="kitchen-order-collapsed-note">Pedido minimizado no painel do administrador.</div>
                 ${row.item.waiterNote ? `<div class="kitchen-order-note"><b>Obs do garcom:</b> ${esc(row.item.waiterNote)}</div>` : ""}
                 <details class="kitchen-order-more" data-persist-key="${esc(rowDetailsKey)}"${detailOpenAttr(rowDetailsKey)}>
                   <summary>Mais detalhes</summary>
@@ -2530,7 +2616,7 @@
         <div class="card">
           <h3>Ambiente Cozinha</h3>
           <p class="note">Painel otimizado para celular, sem rolagem horizontal nos botoes de acao.</p>
-          <p class="note" style="margin-top:0.25rem;">Mostra pedidos com fluxo de cozinha e informacoes do garcom. A prioridade (normal/alta/maxima) e definida pelo administrador.</p>
+          <p class="note" style="margin-top:0.25rem;">Mostra pedidos com fluxo de cozinha e informacoes do garcom. A prioridade (normal/alta/maxima) e definida pelo administrador, com opcao de ignorar como comum.</p>
           <div class="field" style="margin-top:0.75rem;">
             <label>Busca da cozinha</label>
             <input data-role="cook-search" value="${esc(uiState.cookSearch)}" placeholder="Comanda, mesa, cliente, item, observacao ou responsavel" />
@@ -2955,6 +3041,19 @@
     render();
   }
 
+  function toggleAdminKitchenRowCollapse(comandaId, itemId) {
+    const keyComanda = String(comandaId || "");
+    const keyItem = String(itemId || "");
+    if (!keyComanda || !keyItem) return;
+    const nextCollapsed = !isAdminKitchenRowCollapsed(keyComanda, keyItem);
+    setAdminKitchenRowCollapsed(keyComanda, keyItem, nextCollapsed);
+    if (nextCollapsed) {
+      const rowDetailsKey = detailKey("kitchen-row", keyComanda, keyItem);
+      uiState.persistedDetailsOpen[rowDetailsKey] = false;
+    }
+    render();
+  }
+
   function waiterDraftKey(comandaId) {
     return String(comandaId || "");
   }
@@ -3051,7 +3150,7 @@
 
   function appendDraftItemToComanda(comanda, actor, draft) {
     const product = state.products.find((p) => p.id === draft.productId && p.category === draft.category);
-    if (!product) return;
+    if (!product) return null;
 
     product.stock -= Number(draft.qty || 0);
     const waitingBefore = totalKitchenQueueMs();
@@ -3109,6 +3208,7 @@
       reason: "",
       itemId: item.id
     });
+    return item;
   }
 
   function queueComandaDraftItem(form) {
@@ -3563,7 +3663,8 @@
     const isDeliveryRaw = Boolean(form.isDelivery?.checked);
     const deliveryRecipient = String(form.deliveryRecipient?.value || "").trim();
     const deliveryLocation = String(form.deliveryLocation?.value || "").trim();
-    const paidConfirm = form.paidConfirm.checked;
+    const paidConfirm = formCheckboxChecked(form, "paidConfirm", uiState.quickSalePaidConfirm);
+    uiState.quickSalePaidConfirm = paidConfirm;
 
     if (!paidConfirm) {
       alert("Confirme que a venda foi paga para finalizar.");
@@ -3675,6 +3776,7 @@
         uiState.waiterActiveComandaId = saleComanda.id;
       }
       saveState();
+      printKitchenTicket(saleComanda, [item], actor, { reason: "Venda avulsa cozinha" });
       render();
       return;
     }
@@ -3782,8 +3884,12 @@
       return;
     }
 
+    const kitchenItemsToPrint = [];
     for (const draft of draftsToAdd) {
-      appendDraftItemToComanda(comanda, actor, draft);
+      const createdItem = appendDraftItemToComanda(comanda, actor, draft);
+      if (createdItem && itemNeedsKitchen(createdItem)) {
+        kitchenItemsToPrint.push(createdItem);
+      }
     }
 
     clearWaiterDraftItems(comandaId);
@@ -3794,6 +3900,9 @@
     if (form.deliveryLocation) form.deliveryLocation.value = "";
 
     saveState();
+    if (kitchenItemsToPrint.length) {
+      printKitchenTicket(comanda, kitchenItemsToPrint, actor, { reason: "Novo pedido" });
+    }
     render();
   }
 
@@ -3830,6 +3939,14 @@
     });
 
     saveState();
+    if (itemNeedsKitchen(item) && !item.delivered && !item.canceled) {
+      const extraItem = {
+        ...item,
+        qty: delta,
+        waiterNote: item.waiterNote ? `${item.waiterNote} | Acrescimo +${delta}` : `Acrescimo +${delta}`
+      };
+      printKitchenTicket(comanda, [extraItem], actor, { reason: "Acrescimo de item" });
+    }
     render();
   }
 
@@ -3839,23 +3956,42 @@
       alert("Somente administrador pode alterar prioridade de pedido.");
       return;
     }
-    if (!["normal", "alta", "maxima"].includes(priority)) return;
+    if (!["normal", "comum", "alta", "maxima"].includes(priority)) return;
 
     const comanda = findOpenComanda(comandaId);
     if (!comanda) return;
     const item = (comanda.items || []).find((entry) => entry.id === itemId);
     if (!item || !itemNeedsKitchen(item) || item.canceled || item.delivered) return;
-    if ((item.kitchenPriority || "normal") === priority) return;
+    const currentPriority = item.kitchenPriority || "normal";
+    const rowDetailsKey = detailKey("kitchen-row", comanda.id, item.id);
+    if (currentPriority === priority) {
+      if (priority === "comum") {
+        setAdminKitchenRowCollapsed(comanda.id, item.id, true);
+        uiState.persistedDetailsOpen[rowDetailsKey] = false;
+        render();
+      }
+      return;
+    }
 
     item.kitchenPriority = priority;
     item.kitchenPriorityById = actor.id;
     item.kitchenPriorityByName = actor.name;
     item.kitchenPriorityAt = isoNow();
 
+    if (priority === "comum") {
+      setAdminKitchenRowCollapsed(comanda.id, item.id, true);
+      uiState.persistedDetailsOpen[rowDetailsKey] = false;
+    } else {
+      setAdminKitchenRowCollapsed(comanda.id, item.id, false);
+    }
+
     appendComandaEvent(comanda, {
       actor,
       type: "cozinha_prioridade",
-      detail: `Prioridade do pedido ${item.name} alterada para ${kitchenPriorityLabel(priority)}.`,
+      detail:
+        priority === "comum"
+          ? `Prioridade do pedido ${item.name} ignorada pelo administrador e enviada como Comum.`
+          : `Prioridade do pedido ${item.name} alterada para ${kitchenPriorityLabel(priority)}.`,
       itemId: item.id
     });
 
@@ -4083,11 +4219,12 @@
     }
 
     const paymentMethod = form.paymentMethod.value;
-    const manualCheck = form.manualCheck.checked;
+    const manualCheck = formCheckboxChecked(form, "manualCheck", false);
     const fiadoCustomer = form.fiadoCustomer.value.trim();
     const total = comandaTotal(comanda);
+    const requiresManualCheck = paymentMethod !== "fiado";
 
-    if (!manualCheck) {
+    if (requiresManualCheck && !manualCheck) {
       alert("Confirme manualmente o pagamento antes de finalizar.");
       return;
     }
@@ -4154,9 +4291,21 @@
     const method = select.value;
     const fiadoBox = form.querySelector('[data-role="fiado-box"]');
     const pixBox = form.querySelector('[data-role="pix-box"]');
+    const manualCheck = form.querySelector('[data-role="manual-check"]');
+    const manualCheckNote = form.querySelector('[data-role="manual-check-note"]');
+    const isFiado = method === "fiado";
 
-    if (fiadoBox) fiadoBox.style.display = method === "fiado" ? "grid" : "none";
+    if (fiadoBox) fiadoBox.style.display = isFiado ? "grid" : "none";
     if (pixBox) pixBox.style.display = method === "pix" ? "grid" : "none";
+    if (manualCheck) {
+      manualCheck.disabled = isFiado;
+      if (isFiado) {
+        manualCheck.checked = true;
+      }
+    }
+    if (manualCheckNote) {
+      manualCheckNote.style.display = isFiado ? "block" : "none";
+    }
 
     if (method === "pix") {
       const comandaId = form.dataset.comandaId;
@@ -4174,6 +4323,196 @@
     }
   }
 
+  function openReceiptPopup(html, blockedMessage = "Permita pop-up para imprimir o cupom.") {
+    const popup = window.open("", "_blank", "width=420,height=760");
+    if (!popup) {
+      alert(blockedMessage);
+      return null;
+    }
+    popup.onafterprint = () => {
+      try {
+        popup.close();
+      } catch (_err) {}
+    };
+    popup.document.open();
+    popup.document.write(html);
+    popup.document.close();
+    setTimeout(() => {
+      try {
+        popup.focus();
+        popup.print();
+      } catch (_err) {}
+    }, 220);
+    return popup;
+  }
+
+  function qzLibraryAvailable() {
+    return Boolean(window.qz && window.qz.websocket && window.qz.configs && window.qz.printers && window.qz.print);
+  }
+
+  function ensureQzSecurityConfig() {
+    if (!qzLibraryAvailable() || uiState.qzSecurityConfigured) return;
+    try {
+      // Modo simples para ambiente local. Em producao o ideal e assinatura valida.
+      window.qz.security.setCertificatePromise((resolve) => resolve());
+      window.qz.security.setSignaturePromise(() => (resolve) => resolve());
+      uiState.qzSecurityConfigured = true;
+    } catch (_err) {}
+  }
+
+  async function ensureQzConnected() {
+    if (!qzLibraryAvailable()) {
+      throw new Error("QZ Tray nao detectado no navegador.");
+    }
+    ensureQzSecurityConfig();
+    if (window.qz.websocket.isActive()) return;
+    await window.qz.websocket.connect({ retries: 2, delay: 1 });
+  }
+
+  async function resolveKitchenPrinterName() {
+    const preferred = String(uiState.printerPrefs?.kitchenPrinterName || "").trim();
+    if (preferred) return preferred;
+    return (await window.qz.printers.getDefault()) || "";
+  }
+
+  async function printKitchenTicketViaQz(html, comandaId = "") {
+    await ensureQzConnected();
+    const printerName = await resolveKitchenPrinterName();
+    if (!printerName) {
+      throw new Error("Nenhuma impressora de cozinha configurada/padrao.");
+    }
+    const config = window.qz.configs.create(printerName, {
+      copies: 1,
+      jobName: `cozinha-${String(comandaId || "pedido")}`
+    });
+    const data = [{ type: "pixel", format: "html", flavor: "plain", data: html }];
+    await window.qz.print(config, data);
+  }
+
+  function setKitchenDirectPrintEnabled(enabled) {
+    uiState.printerPrefs = normalizePrinterPrefs({
+      ...uiState.printerPrefs,
+      kitchenDirectEnabled: Boolean(enabled)
+    });
+    persistPrinterPrefs();
+    render();
+  }
+
+  function saveKitchenPrinterConfigFromUi() {
+    const actor = currentActor();
+    if (actor.role !== "admin") {
+      alert("Somente administrador pode configurar a impressora da cozinha.");
+      return;
+    }
+    const input = document.querySelector('[data-role="kitchen-printer-name"]');
+    const kitchenPrinterName = String(input?.value || "").trim();
+    uiState.printerPrefs = normalizePrinterPrefs({
+      ...uiState.printerPrefs,
+      kitchenPrinterName
+    });
+    persistPrinterPrefs();
+    alert(
+      kitchenPrinterName
+        ? `Impressora da cozinha salva: ${kitchenPrinterName}`
+        : "Impressora da cozinha limpa. Sera usada a impressora padrao do computador."
+    );
+    render();
+  }
+
+  function printKitchenTestTicket() {
+    const actor = currentActor();
+    if (actor.role !== "admin") {
+      alert("Somente administrador pode testar a impressora da cozinha.");
+      return;
+    }
+    const mockComanda = {
+      id: "TESTE-COZINHA",
+      table: "Balcao",
+      customer: "Teste"
+    };
+    const mockItem = {
+      id: "IT-TESTE",
+      name: "Cupom de teste",
+      qty: 1,
+      category: "Cozinha",
+      needsKitchen: true,
+      kitchenPriority: "normal",
+      waiterNote: "Teste de impressao",
+      deliveryRequested: false,
+      canceled: false
+    };
+    printKitchenTicket(mockComanda, [mockItem], actor, { reason: "Teste de impressora" });
+  }
+
+  function printKitchenTicket(comanda, items, actor, options = {}) {
+    if (!comanda || !Array.isArray(items) || !items.length) return;
+    if (!actor || (actor.role !== "waiter" && actor.role !== "admin")) return;
+
+    const kitchenItems = items.filter((item) => item && itemNeedsKitchen(item) && !item.canceled);
+    if (!kitchenItems.length) return;
+
+    const reason = String(options.reason || "Novo pedido");
+    const generatedAt = isoNow();
+    const printableItems = kitchenItems
+      .map((item) => {
+        const note = item.waiterNote ? `<p class="line note">Obs: ${esc(item.waiterNote)}</p>` : "";
+        const delivery = item.deliveryRequested
+          ? `<p class="line note">Entrega: ${esc(item.deliveryRecipient || "-")} | ${esc(item.deliveryLocation || "-")}</p>`
+          : "";
+        return `
+          <div class="item">
+            <p class="line"><b>${esc(item.name)}</b></p>
+            <p class="line">Qtd: <b>${Number(item.qty || 0)}</b> | Prioridade: ${esc(kitchenPriorityLabel(item.kitchenPriority || "normal"))}</p>
+            ${note}
+            ${delivery}
+          </div>
+        `;
+      })
+      .join("");
+
+    const html = `
+      <html>
+        <head>
+          <title>Cozinha ${esc(comanda.id)}</title>
+          <style>
+            body { font-family: monospace; margin: 0; padding: 10px; }
+            .ticket { width: 80mm; margin: 0 auto; color: #000; }
+            h2 { margin: 0 0 6px; font-size: 18px; text-align: center; }
+            p { margin: 2px 0; font-size: 12px; line-height: 1.25; }
+            hr { border: none; border-top: 1px dashed #000; margin: 7px 0; }
+            .meta { font-size: 11px; }
+            .item { margin: 0 0 6px; }
+            .line.note { font-size: 11px; }
+            .strong { font-weight: 700; }
+          </style>
+        </head>
+        <body>
+          <div class="ticket">
+            <h2>${esc(ESTABLISHMENT_NAME)} | COZINHA</h2>
+            <p class="strong">Pedido: ${esc(reason)}</p>
+            <p class="meta">Comanda: ${esc(comanda.id)} | Mesa/ref: ${esc(comanda.table || "-")}</p>
+            <p class="meta">Cliente: ${esc(comanda.customer || "-")}</p>
+            <p class="meta">Solicitante: ${esc(actor.name || "-")} (${esc(roleLabel(actor.role || ""))})</p>
+            <p class="meta">Gerado em: ${esc(formatDateTime(generatedAt))}</p>
+            <hr>
+            ${printableItems}
+            <hr>
+            <p class="meta">Cupom de cozinha - impressao automatica</p>
+          </div>
+        </body>
+      </html>
+    `;
+
+    if (uiState.printerPrefs?.kitchenDirectEnabled) {
+      void printKitchenTicketViaQz(html, comanda.id).catch((_err) => {
+        openReceiptPopup(html, "Permita pop-up para imprimir automaticamente o cupom da cozinha.");
+      });
+      return;
+    }
+
+    openReceiptPopup(html, "Permita pop-up para imprimir automaticamente o cupom da cozinha.");
+  }
+
   function printComanda(comandaId) {
     const comanda = findAnyComanda(comandaId);
     if (!comanda) return;
@@ -4181,12 +4520,6 @@
     const lines = (comanda.items || [])
       .map((i) => `${i.name} x${i.qty}  ${money(i.priceAtSale)}${i.canceled ? " (cancelado)" : ""}`)
       .join("<br>");
-
-    const popup = window.open("", "_blank", "width=420,height=700");
-    if (!popup) {
-      alert("Permita pop-up para imprimir o cupom.");
-      return;
-    }
 
     const html = `
       <html>
@@ -4221,13 +4554,7 @@
       </html>
     `;
 
-    popup.document.open();
-    popup.document.write(html);
-    popup.document.close();
-    setTimeout(() => {
-      popup.focus();
-      popup.print();
-    }, 300);
+    openReceiptPopup(html, "Permita pop-up para imprimir o cupom.");
   }
 
   function closeCash(form) {
@@ -4452,6 +4779,16 @@
       return;
     }
 
+    if (action === "save-kitchen-printer-config") {
+      saveKitchenPrinterConfigFromUi();
+      return;
+    }
+
+    if (action === "test-kitchen-printer") {
+      printKitchenTestTicket();
+      return;
+    }
+
     if (action === "deliver-item") {
       deliverItem(button.dataset.comandaId, button.dataset.itemId);
       return;
@@ -4459,6 +4796,11 @@
 
     if (action === "cook-status") {
       setKitchenItemStatus(button.dataset.comandaId, button.dataset.itemId, button.dataset.status);
+      return;
+    }
+
+    if (action === "toggle-kitchen-row-collapse") {
+      toggleAdminKitchenRowCollapse(button.dataset.comandaId, button.dataset.itemId);
       return;
     }
 
@@ -4643,6 +4985,11 @@
         return;
       }
 
+      if (target.name === "paidConfirm" && target.closest('form[data-role="quick-sale-form"]')) {
+        uiState.quickSalePaidConfirm = Boolean(target.checked);
+        return;
+      }
+
       if (target.matches('[data-role="payment-method"]')) {
         toggleFinalizeView(target);
         return;
@@ -4656,6 +5003,11 @@
       if (target.matches('[data-role="monitor-filter"]')) {
         uiState.monitorWaiterId = target.value || "all";
         render();
+        return;
+      }
+
+      if (target.matches('[data-role="kitchen-direct-enabled"]')) {
+        setKitchenDirectPrintEnabled(Boolean(target.checked));
         return;
       }
 
@@ -4724,6 +5076,11 @@
   });
 
   window.addEventListener("storage", (event) => {
+    if (event.key === PRINTER_PREFS_KEY) {
+      uiState.printerPrefs = loadPrinterPrefs();
+      render();
+      return;
+    }
     if (event.key !== STORAGE_KEY || !event.newValue) return;
     try {
       const incoming = JSON.parse(event.newValue);

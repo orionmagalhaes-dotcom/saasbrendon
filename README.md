@@ -12,6 +12,18 @@ npm run build
 
 A pasta de saida sera `dist/`.
 
+## Impressao instantanea da cozinha (QZ Tray)
+
+Para imprimir automaticamente sem abrir dialogo:
+
+1. Instale e deixe o QZ Tray aberto no computador que envia para a impressora da cozinha.
+2. Entre como admin no painel `Monitor em Tempo Real`.
+3. Em `Impressora da cozinha`, ative `Habilitar impressao direta (sem dialogo)`.
+4. Informe o nome exato da impressora (opcional; se vazio usa a impressora padrao).
+5. Clique em `Imprimir teste`.
+
+Se a impressao direta falhar, o sistema faz fallback para popup de impressao do navegador.
+
 ## Deploy no Cloudflare Pages
 
 Use estas configuracoes no projeto Pages:

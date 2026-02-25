@@ -463,6 +463,19 @@ th {
   gap: 0.5rem;
 }
 
+.kitchen-order-head-actions {
+  display: grid;
+  gap: 0.3rem;
+  justify-items: end;
+  flex: 0 0 auto;
+}
+
+.kitchen-collapse-toggle {
+  min-height: 30px;
+  padding: 0.24rem 0.48rem;
+  font-size: 0.74rem;
+}
+
 .kitchen-order-head h4 {
   margin: 0;
   font-size: 0.97rem;
@@ -547,6 +560,28 @@ th {
   color: #88ebb0;
 }
 
+.kitchen-order-collapsed-note {
+  display: none;
+  border: 1px dashed #3c5578;
+  border-radius: 8px;
+  background: rgba(13, 24, 40, 0.68);
+  padding: 0.3rem 0.42rem;
+  color: #cde2ff;
+  font-size: 0.79rem;
+}
+
+.kitchen-order-card.is-collapsed .kitchen-order-meta,
+.kitchen-order-card.is-collapsed .kitchen-priority-actions,
+.kitchen-order-card.is-collapsed .kitchen-order-note,
+.kitchen-order-card.is-collapsed .kitchen-order-more,
+.kitchen-order-card.is-collapsed .kitchen-order-actions {
+  display: none;
+}
+
+.kitchen-order-card.is-collapsed .kitchen-order-collapsed-note {
+  display: block;
+}
+
 .kitchen-order-meta {
   display: grid;
   gap: 0.4rem;
@@ -597,7 +632,7 @@ th {
 .kitchen-priority-actions {
   display: grid;
   gap: 0.34rem;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .kitchen-priority-actions .btn {
@@ -614,6 +649,12 @@ th {
 .kitchen-priority-actions .btn:disabled {
   opacity: 0.9;
   cursor: default;
+}
+
+.kitchen-priority-actions .kitchen-priority-ignore.is-active {
+  border-color: #4e7194;
+  background: #1b3049;
+  color: #b7dcff;
 }
 
 .kitchen-order-more {
@@ -1089,7 +1130,7 @@ th {
   }
 
   .kitchen-priority-actions {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -1285,7 +1326,7 @@ th {
   }
 
   .kitchen-priority-actions {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.24rem;
   }
 
