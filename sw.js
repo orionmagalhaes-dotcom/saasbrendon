@@ -1,4 +1,4 @@
-const CACHE_NAME = "restobar-cache-v4";
+const CACHE_NAME = "restobar-cache-v6";
 const ASSETS = [
   "./",
   "./index.html",
@@ -25,6 +25,13 @@ function isCacheableStaticRequest(request) {
   return STATIC_EXTENSIONS.some((ext) => url.pathname.endsWith(ext));
 }
 
+function isRuntimeCriticalRequest(request) {
+  if (!request || request.method !== "GET") return false;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return false;
+  return url.pathname.endsWith("/app.js") || url.pathname.endsWith("/styles.css") || url.pathname.endsWith("/index.html");
+}
+
 async function cacheFirstStatic(request) {
   const cached = await caches.match(request);
   if (cached) return cached;
@@ -37,6 +44,24 @@ async function cacheFirstStatic(request) {
     }
     return response;
   } catch (_err) {
+    if (request.destination === "document") {
+      return (await caches.match("./index.html")) || Response.error();
+    }
+    return new Response("Offline", { status: 503, statusText: "Offline" });
+  }
+}
+
+async function networkFirstStatic(request) {
+  try {
+    const response = await fetch(request);
+    if (response && response.ok) {
+      const cache = await caches.open(CACHE_NAME);
+      await cache.put(request, response.clone());
+    }
+    return response;
+  } catch (_err) {
+    const cached = await caches.match(request);
+    if (cached) return cached;
     if (request.destination === "document") {
       return (await caches.match("./index.html")) || Response.error();
     }
@@ -63,5 +88,9 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   if (!isCacheableStaticRequest(request)) return;
+  if (isRuntimeCriticalRequest(request)) {
+    event.respondWith(networkFirstStatic(request));
+    return;
+  }
   event.respondWith(cacheFirstStatic(request));
 });
