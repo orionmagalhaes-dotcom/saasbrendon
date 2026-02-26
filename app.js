@@ -806,10 +806,8 @@
       if (error || !data?.payload) return;
 
       const localUpdated = parseUpdatedAtTimestamp(state.meta?.updatedAt);
-      const remoteUpdated = Math.max(
-        parseUpdatedAtTimestamp(data.payload?.meta?.updatedAt),
-        parseUpdatedAtTimestamp(data.updated_at)
-      );
+      const remoteMetaUpdated = parseUpdatedAtTimestamp(data.payload?.meta?.updatedAt);
+      const remoteUpdated = remoteMetaUpdated || (!localUpdated ? parseUpdatedAtTimestamp(data.updated_at) : 0);
       if (Number.isFinite(remoteUpdated) && remoteUpdated > localUpdated) {
         adoptIncomingState(data.payload);
         state.meta.lastCloudSyncAt = isoNow();
