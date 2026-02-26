@@ -4,6 +4,8 @@
 (() => {
   const STORAGE_KEY = "restobar_control_v1";
   const SESSION_KEY = "restobar_local_session_user";
+  const SESSION_TAB_KEY = "restobar_local_session_user_tab";
+  const CLIENT_SESSION_KEY = "restobar_local_client_session_id";
   const PRINTER_PREFS_KEY = "restobar_local_printer_prefs_v1";
   const HISTORY_RETENTION_DAYS = 90;
   const PAYABLES_RETENTION_DAYS = 350;
@@ -46,12 +48,23 @@
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZxdWlpY3NkdmpxenJiZWl1YXhvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA5NDMxMDksImV4cCI6MjA4NjUxOTEwOX0.JYRxM0TJa1zEvqUPfMDWlCYnUfOlGR5oq7UoVaonL7w";
   const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_hrVkbcMHzu04NcpSvttgrw_VIiVctr-";
   const SUPABASE_PROJECT_ID = "fquiicsdvjqzrbeiuaxo";
+  const DEV_ACCESS_LOGIN = "dev1";
+  const DEV_ACCESS_PASSWORD = "dev1";
+  const DEV_SESSION_ID = "__dev__";
+  const DEVICE_PRESENCE_TTL_MS = 45 * 1000;
+  const DEVICE_PRESENCE_PING_MS = 10 * 1000;
+  const ROLE_ACCESS_CODE_BY_ROLE = Object.freeze({
+    admin: "1111",
+    waiter: "2222",
+    cook: "3333"
+  });
   const PRINT_PIPELINE_ENABLED = false;
   const AUTO_OPEN_KITCHEN_PREVIEW_ON_ADD = false;
 
   const app = document.getElementById("app");
   const uiState = {
     adminTab: "monitor",
+    devTab: "monitor",
     waiterTab: "abrir",
     cookTab: "ativos",
     finalizeOpenByComanda: {},
@@ -70,6 +83,7 @@
     cookSearch: "",
     supabaseStatus: "desconectado",
     supabaseLastError: "",
+    devicePresenceBySession: {},
     remoteMonitorEvents: [],
     waiterReadyModalItems: [],
     waiterReadySeenMap: {},
@@ -87,12 +101,61 @@
     qzSecurityConfigured: false
   };
 
+  const DEV_SHADOW_USER = Object.freeze({
+    id: DEV_SESSION_ID,
+    role: "dev",
+    name: "Dev",
+    functionName: "Dev",
+    login: DEV_ACCESS_LOGIN,
+    active: true
+  });
+
+  function isAdminOrDev(userOrRole) {
+    const role = typeof userOrRole === "string" ? userOrRole : userOrRole?.role;
+    return role === "admin" || role === "dev";
+  }
+
+  function buildClientSessionId() {
+    const existing = String(sessionStorage.getItem(CLIENT_SESSION_KEY) || "").trim();
+    if (existing) return existing;
+    const created = `sess-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+    sessionStorage.setItem(CLIENT_SESSION_KEY, created);
+    return created;
+  }
+
+  const clientSessionId = buildClientSessionId();
+
   function isoNow() {
     return new Date().toISOString();
   }
 
   function todayISO() {
     return new Date().toISOString().slice(0, 10);
+  }
+
+  function parseUpdatedAtTimestamp(value) {
+    const ts = new Date(value || 0).getTime();
+    if (!Number.isFinite(ts)) return 0;
+    const oneYearAhead = Date.now() + 365 * 24 * 60 * 60 * 1000;
+    if (ts > oneYearAhead) return 0;
+    return ts;
+  }
+
+  function browserNameFromUa(uaRaw) {
+    const ua = String(uaRaw || "").toLowerCase();
+    if (ua.includes("edg/")) return "Edge";
+    if (ua.includes("opr/") || ua.includes("opera")) return "Opera";
+    if (ua.includes("chrome/") && !ua.includes("edg/")) return "Chrome";
+    if (ua.includes("firefox/")) return "Firefox";
+    if (ua.includes("safari/") && !ua.includes("chrome/")) return "Safari";
+    return "Navegador";
+  }
+
+  function deviceTypeFromUa(uaRaw) {
+    const ua = String(uaRaw || "").toLowerCase();
+    if (ua.includes("ipad") || ua.includes("tablet")) return "Tablet";
+    if (ua.includes("mobi") || ua.includes("android") || ua.includes("iphone")) return "Celular";
+    return "Desktop";
   }
 
   function formatDateTime(value) {
@@ -275,67 +338,13 @@
     targetState.seq.user = Math.max(Number(targetState.seq.user || 0), nextUserId + 1);
   }
 
-  function pickPrimaryAdmin(users) {
-    const admins = (Array.isArray(users) ? users : [])
-      .filter((u) => u?.role === "admin")
-      .sort((a, b) => Number(a?.id || 0) - Number(b?.id || 0));
-    if (!admins.length) return null;
-    return admins.find((u) => u.active !== false) || admins[0];
-  }
-
   function applyFinalClientPreparation(targetState) {
     targetState.meta = targetState.meta || {};
-    const alreadyPrepared = targetState.meta[FINAL_CLIENT_PREP_SIGNATURE_KEY] === FINAL_CLIENT_PREP_SIGNATURE;
-    if (alreadyPrepared) return;
-
     ensureSystemUsers(targetState);
-    const selectedAdmin = pickPrimaryAdmin(targetState.users) || {
-      id: 1,
-      role: "admin",
-      name: "Administrador",
-      functionName: "Administrador",
-      login: "admin",
-      password: "admin",
-      active: true
-    };
-    const adminId = Math.max(1, Number(selectedAdmin.id || 1));
-    const cleanedAdmin = {
-      ...selectedAdmin,
-      id: adminId,
-      role: "admin",
-      name: "Administrador",
-      functionName: "Administrador",
-      login: "admin",
-      password: "admin",
-      active: true
-    };
-
-    targetState.users = [cleanedAdmin];
-    targetState.products = [];
-    targetState.openComandas = [];
-    targetState.closedComandas = [];
-    targetState.cookHistory = [];
-    targetState.payables = [];
-    targetState.auditLog = [];
-    targetState.history90 = [];
-    targetState.cash = {
-      id: "CX-1",
-      openedAt: isoNow(),
-      date: todayISO()
-    };
-    targetState.seq = {
-      ...targetState.seq,
-      user: adminId + 1,
-      product: 1,
-      comanda: 1,
-      item: 1,
-      sale: 1,
-      payable: 1,
-      cash: 2,
-      event: 1
-    };
     targetState.meta[FINAL_CLIENT_PREP_FLAG] = true;
-    targetState.meta[FINAL_CLIENT_PREP_MARKER] = isoNow();
+    if (!targetState.meta[FINAL_CLIENT_PREP_MARKER]) {
+      targetState.meta[FINAL_CLIENT_PREP_MARKER] = isoNow();
+    }
     targetState.meta[FINAL_CLIENT_PREP_SIGNATURE_KEY] = FINAL_CLIENT_PREP_SIGNATURE;
   }
 
@@ -498,24 +507,46 @@
     }
   }
 
+  function parseSessionIdentity(raw) {
+    const value = String(raw || "").trim();
+    if (!value) return null;
+    if (value === DEV_SESSION_ID) return DEV_SESSION_ID;
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  }
+
   function loadSessionUserId(fallbackUserId = null) {
-    const raw = localStorage.getItem(SESSION_KEY);
-    if (raw !== null) {
-      const parsed = Number(raw);
-      return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+    const tabSession = parseSessionIdentity(sessionStorage.getItem(SESSION_TAB_KEY));
+    if (tabSession) {
+      return tabSession;
     }
-    if (fallbackUserId && Number.isInteger(fallbackUserId) && fallbackUserId > 0) {
-      localStorage.setItem(SESSION_KEY, String(fallbackUserId));
-      return fallbackUserId;
+
+    const persistentSession = parseSessionIdentity(localStorage.getItem(SESSION_KEY));
+    if (persistentSession) {
+      sessionStorage.setItem(SESSION_TAB_KEY, String(persistentSession));
+      return persistentSession;
+    }
+
+    const fallbackSession = parseSessionIdentity(fallbackUserId);
+    if (fallbackSession) {
+      sessionStorage.setItem(SESSION_TAB_KEY, String(fallbackSession));
+      return fallbackSession;
     }
     return null;
   }
 
-  function persistSessionUserId(userId) {
-    if (userId && Number.isInteger(userId) && userId > 0) {
-      localStorage.setItem(SESSION_KEY, String(userId));
+  function persistSessionUserId(userId, rememberLogin = false) {
+    const parsed = parseSessionIdentity(userId);
+    if (parsed) {
+      sessionStorage.setItem(SESSION_TAB_KEY, String(parsed));
+      if (rememberLogin) {
+        localStorage.setItem(SESSION_KEY, String(parsed));
+      } else {
+        localStorage.removeItem(SESSION_KEY);
+      }
       return;
     }
+    sessionStorage.removeItem(SESSION_TAB_KEY);
     localStorage.removeItem(SESSION_KEY);
   }
 
@@ -548,9 +579,12 @@
   }
 
   let state = loadState();
-  let sessionUserId = loadSessionUserId(state.session?.userId || null);
+  let sessionUserId = loadSessionUserId(null);
   state.session = { userId: null };
-  if (sessionUserId && !state.users.some((u) => u.id === sessionUserId && u.active !== false)) {
+  const sessionUserExists =
+    sessionUserId === DEV_SESSION_ID ||
+    state.users.some((u) => u.id === sessionUserId && u.active !== false);
+  if (sessionUserId && !sessionUserExists) {
     sessionUserId = null;
     persistSessionUserId(null);
   }
@@ -570,7 +604,6 @@
     state = normalizeStateShape(source);
     state.session = { userId: null };
     sessionUserId = currentSession;
-    persistSessionUserId(sessionUserId);
   }
 
   function saveState(options = {}) {
@@ -691,8 +724,11 @@
       const { data, error } = await client.from("restobar_state").select("payload,updated_at").eq("id", "main").maybeSingle();
       if (error || !data?.payload) return;
 
-      const localUpdated = new Date(state.meta?.updatedAt || 0).getTime();
-      const remoteUpdated = new Date(data.payload?.meta?.updatedAt || data.updated_at || 0).getTime();
+      const localUpdated = parseUpdatedAtTimestamp(state.meta?.updatedAt);
+      const remoteUpdated = Math.max(
+        parseUpdatedAtTimestamp(data.payload?.meta?.updatedAt),
+        parseUpdatedAtTimestamp(data.updated_at)
+      );
       if (Number.isFinite(remoteUpdated) && remoteUpdated > localUpdated) {
         adoptIncomingState(data.payload);
         state.meta.lastCloudSyncAt = isoNow();
@@ -709,6 +745,61 @@
     uiState.remoteMonitorEvents.unshift(payload);
     if (uiState.remoteMonitorEvents.length > 300) {
       uiState.remoteMonitorEvents = uiState.remoteMonitorEvents.slice(0, 300);
+    }
+  }
+
+  function pruneDevicePresence() {
+    const cutoff = Date.now() - DEVICE_PRESENCE_TTL_MS;
+    for (const [sessionId, row] of Object.entries(uiState.devicePresenceBySession || {})) {
+      const ts = new Date(row?.seenAt || 0).getTime();
+      if (!Number.isFinite(ts) || ts < cutoff) {
+        delete uiState.devicePresenceBySession[sessionId];
+      }
+    }
+  }
+
+  function upsertDevicePresence(payload, options = {}) {
+    const sessionId = String(payload?.sessionId || "").trim();
+    if (!sessionId) return;
+    uiState.devicePresenceBySession[sessionId] = {
+      ...payload,
+      sessionId,
+      seenAt: payload?.seenAt || isoNow(),
+      isSelf: options.isSelf === true
+    };
+    pruneDevicePresence();
+  }
+
+  function listDevicePresenceRows() {
+    pruneDevicePresence();
+    return Object.values(uiState.devicePresenceBySession || {}).sort(
+      (a, b) => new Date(b?.seenAt || 0) - new Date(a?.seenAt || 0)
+    );
+  }
+
+  function buildPresencePayload() {
+    const user = getCurrentUser();
+    const ua = String(navigator.userAgent || "");
+    return {
+      sessionId: clientSessionId,
+      seenAt: isoNow(),
+      role: user?.role || "guest",
+      userName: user?.name || "Nao autenticado",
+      userId: user?.id || null,
+      browser: browserNameFromUa(ua),
+      deviceType: deviceTypeFromUa(ua),
+      platform: String(navigator.platform || "-"),
+      language: String(navigator.language || "-"),
+      viewport: `${window.innerWidth || 0}x${window.innerHeight || 0}`,
+      path: String(window.location.pathname || "/")
+    };
+  }
+
+  function broadcastPresencePing() {
+    const payload = buildPresencePayload();
+    upsertDevicePresence(payload, { isSelf: true });
+    if (supabaseCtx.channel) {
+      supabaseCtx.channel.send({ type: "broadcast", event: "presence_ping", payload }).catch(() => {});
     }
   }
 
@@ -744,9 +835,17 @@
         if (message?.payload) {
           pushRemoteMonitorEvent(message.payload);
           const user = getCurrentUser();
-          if (user?.role === "admin" && uiState.adminTab === "monitor") {
+          if ((user?.role === "admin" && uiState.adminTab === "monitor") || (user?.role === "dev" && uiState.devTab === "monitor")) {
             render();
           }
+        }
+      })
+      .on("broadcast", { event: "presence_ping" }, (message) => {
+        if (!message?.payload) return;
+        upsertDevicePresence(message.payload);
+        const user = getCurrentUser();
+        if (user?.role === "dev" && uiState.devTab === "devices") {
+          render();
         }
       })
       .on("broadcast", { event: "state_changed" }, () => {
@@ -759,6 +858,7 @@
         supabaseCtx.reconnectAttempts = 0;
         clearSupabaseReconnectTimer();
         setSupabaseStatus("conectado");
+        broadcastPresencePing();
       } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
         supabaseCtx.connected = false;
         supabaseCtx.reconnectAttempts = Math.min(supabaseCtx.reconnectAttempts + 1, 6);
@@ -773,11 +873,42 @@
   }
 
   function getCurrentUser() {
+    if (sessionUserId === DEV_SESSION_ID) {
+      return DEV_SHADOW_USER;
+    }
     return state.users.find((u) => u.id === sessionUserId) || null;
   }
 
+  function findFirstActiveUserByRole(role) {
+    const rows = state.users
+      .filter((u) => u.active && u.role === role)
+      .sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
+    return rows[0] || null;
+  }
+
+  function findUserByRoleAccessCode(login, password) {
+    const loginValue = String(login || "").trim();
+    const passwordValue = String(password || "");
+    if (!loginValue || !passwordValue) return null;
+    if (loginValue !== passwordValue) return null;
+
+    for (const [role, code] of Object.entries(ROLE_ACCESS_CODE_BY_ROLE)) {
+      if (loginValue === code) {
+        return findFirstActiveUserByRole(role);
+      }
+    }
+    return null;
+  }
+
   function findUserByLoginPassword(login, password) {
-    return state.users.find((u) => u.active && u.login === login && u.password === password) || null;
+    const loginValue = String(login || "").trim();
+    const passwordValue = String(password || "");
+    if (loginValue === DEV_ACCESS_LOGIN && passwordValue === DEV_ACCESS_PASSWORD) {
+      return DEV_SHADOW_USER;
+    }
+    const direct = state.users.find((u) => u.active && u.login === loginValue && u.password === passwordValue) || null;
+    if (direct) return direct;
+    return findUserByRoleAccessCode(loginValue, passwordValue);
   }
 
   function currentActor() {
@@ -884,6 +1015,7 @@
 
   function roleLabel(role) {
     if (role === "admin") return "Administrador";
+    if (role === "dev") return "Dev";
     if (role === "waiter") return "Garcom";
     if (role === "cook") return "Cozinheiro";
     return role;
@@ -1077,7 +1209,7 @@
   }
 
   function acknowledgeKitchenReceiptInCookPanel(actor) {
-    if (!actor || (actor.role !== "cook" && actor.role !== "admin")) return false;
+    if (!actor || (actor.role !== "cook" && !isAdminOrDev(actor))) return false;
     let changed = false;
     let changedCount = 0;
     let firstItemName = "";
@@ -1511,6 +1643,7 @@
     const employees = state.users.filter((u) => u.role === "waiter" || u.role === "cook");
     const adminUser = getCurrentUser();
     const adminLogin = adminUser?.role === "admin" ? adminUser.login : "";
+    const canManageOwnCredentials = adminUser?.role === "admin";
     return `
       <div class="grid cols-2">
         <div class="card">
@@ -1551,7 +1684,7 @@
             : `<div class="empty" style="margin-top:0.75rem;">Nenhum funcionario cadastrado.</div>`}
         </div>
       </div>
-      <div class="card" style="margin-top:0.75rem;">
+      ${canManageOwnCredentials ? `<div class="card" style="margin-top:0.75rem;">
         <h3>Meu Acesso (Admin)</h3>
         <p class="note">Altere o proprio login e senha do administrador logado.</p>
         <form id="admin-self-credentials-form" class="form" style="margin-top:0.75rem;" autocomplete="off">
@@ -1575,7 +1708,7 @@
           </div>
           <button class="btn primary" type="submit">Atualizar Meu Login e Senha</button>
         </form>
-      </div>
+      </div>` : ""}
     `;
   }
 
@@ -2013,7 +2146,7 @@
 
   function printCurrentCashHistoryReport() {
     const actor = currentActor();
-    if (actor.role !== "admin") {
+    if (!isAdminOrDev(actor)) {
       alert("Apenas administrador pode visualizar historico de caixa.");
       return;
     }
@@ -2070,7 +2203,7 @@
     const creatorName = resolveComandaResponsibleName(comanda);
     const creatorRole = String(creatorUser?.role || openEvent?.actorRole || "").trim();
     const creatorRoleText = creatorRole ? ` (${roleLabel(creatorRole)})` : "";
-    const showCreatorForAdmin = viewer?.role === "admin";
+    const showCreatorForAdmin = isAdminOrDev(viewer);
 
     const rows = (comanda.items || [])
       .map(
@@ -2280,10 +2413,12 @@
   }
 
   function renderAdminMonitor() {
-    const employees = state.users.filter((u) => u.role === "waiter" || u.role === "cook");
+    const actor = getCurrentUser();
+    const isDevView = actor?.role === "dev";
+    const employees = state.users.filter((u) => u.role === "waiter" || u.role === "cook" || (isDevView && u.role === "admin"));
     const selected = uiState.monitorWaiterId;
     const allEvents = [...uiState.remoteMonitorEvents, ...state.auditLog]
-      .filter((event) => event.actorRole === "waiter" || event.actorRole === "cook")
+      .filter((event) => (isDevView ? true : event.actorRole === "waiter" || event.actorRole === "cook"))
       .sort((a, b) => new Date(b.ts || b.broadcastAt) - new Date(a.ts || a.broadcastAt));
     const filteredEvents = allEvents.filter((event) => {
       if (selected === "all") return true;
@@ -2500,6 +2635,105 @@
       </div>
     `;
   }
+
+  function renderDevDevices() {
+    const rows = listDevicePresenceRows();
+    return `
+      <div class="grid cols-2">
+        <div class="card">
+          <h3>Dispositivos online</h3>
+          <p class="note">Atualizacao em tempo real de sessoes ativas no sistema (admin, garcom, cozinha e dev).</p>
+          <div class="kpis" style="margin-top:0.75rem;">
+            <div class="kpi"><p>Sessoes ativas</p><b>${rows.length}</b></div>
+            <div class="kpi"><p>Ultimo ping local</p><b>${formatDateTime(isoNow())}</b></div>
+          </div>
+          ${rows.length
+            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="history-table"><thead><tr><th>Sessao</th><th>Usuario</th><th>Papel</th><th>Dispositivo</th><th>Navegador</th><th>Plataforma</th><th>Tela</th><th>Ultimo sinal</th></tr></thead><tbody>${rows
+                .map(
+                  (row) =>
+                    `<tr><td>${esc(row.sessionId)}</td><td>${esc(row.userName || "-")}</td><td>${esc(roleLabel(row.role || "-"))}</td><td>${esc(row.deviceType || "-")}${row.isSelf ? " (este)" : ""}</td><td>${esc(row.browser || "-")}</td><td>${esc(row.platform || "-")}</td><td>${esc(row.viewport || "-")}</td><td>${esc(formatDateTime(row.seenAt))}</td></tr>`
+                )
+                .join("")}</tbody></table></div>`
+            : `<div class="empty" style="margin-top:0.75rem;">Sem dispositivos ativos no momento.</div>`}
+        </div>
+        <div class="card">
+          <h3>Eventos recentes</h3>
+          ${uiState.remoteMonitorEvents.length
+            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="history-table"><thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th></tr></thead><tbody>${uiState.remoteMonitorEvents
+                .slice(0, 120)
+                .map(
+                  (event) =>
+                    `<tr><td>${formatDateTime(event.ts || event.broadcastAt)}</td><td>${esc(event.actorName || "-")}</td><td>${renderEventTypeTag(event.type || "-")}</td><td>${esc(event.comandaId || "-")}</td><td>${esc(event.detail || "-")}</td></tr>`
+                )
+                .join("")}</tbody></table></div>`
+            : `<div class="empty" style="margin-top:0.75rem;">Sem eventos remotos recebidos ainda.</div>`}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderDev(user) {
+    const tabs = [
+      { key: "dashboard", label: "Dashboard" },
+      { key: "comandas", label: "Comandas" },
+      { key: "produtos", label: "Produtos" },
+      { key: "funcionarios", label: "Funcionarios" },
+      { key: "avulsa", label: "Venda Avulsa" },
+      { key: "monitor", label: "Monitor" },
+      { key: "devices", label: "Dispositivos" },
+      { key: "apagar", label: "A Pagar" },
+      { key: "financeiro", label: "Financas" },
+      { key: "historico", label: "Historico" },
+      { key: "caixa", label: "Fechar Caixa" }
+    ];
+
+    let content = "";
+    switch (uiState.devTab) {
+      case "comandas":
+        content = renderAdminComandas();
+        break;
+      case "produtos":
+        content = renderAdminProducts();
+        break;
+      case "funcionarios":
+        content = renderAdminEmployees();
+        break;
+      case "avulsa":
+        content = renderQuickSale("admin");
+        break;
+      case "monitor":
+        content = renderAdminMonitor();
+        break;
+      case "devices":
+        content = renderDevDevices();
+        break;
+      case "apagar":
+        content = renderAdminPayables();
+        break;
+      case "financeiro":
+        content = renderAdminFinance();
+        break;
+      case "historico":
+        content = renderAdminHistory();
+        break;
+      case "caixa":
+        content = renderAdminCash();
+        break;
+      default:
+        content = renderAdminDashboard();
+    }
+
+    app.innerHTML = `
+      <div class="container app-shell role-dev">
+        ${renderInstallBanner()}
+        ${renderTopBar(user)}
+        ${renderTabs("dev", tabs, uiState.devTab)}
+        ${content}
+        ${renderComandaItemSelectorModal()}
+      </div>
+    `;
+  }
+
   function renderWaiterHome() {
     return `
       <div class="card">
@@ -3068,8 +3302,8 @@
 
   function renderKitchenOpsBoard(rows, options = {}) {
     const actor = getCurrentUser();
-    const canManagePriority = actor?.role === "admin";
-    const canCollapseRows = actor?.role === "admin";
+    const canManagePriority = isAdminOrDev(actor);
+    const canCollapseRows = isAdminOrDev(actor);
     const emptyMessage = options.emptyMessage || "Sem pedidos ativos na cozinha.";
     if (!rows.length) {
       return `<div class="empty" style="margin-top:0.75rem;">${esc(emptyMessage)}</div>`;
@@ -3298,6 +3532,8 @@
 
     if (user.role === "admin") {
       renderAdmin(user);
+    } else if (user.role === "dev") {
+      renderDev(user);
     } else if (user.role === "cook") {
       acknowledgeKitchenReceiptInCookPanel(user);
       renderCook(user);
@@ -3536,7 +3772,7 @@
 
   function resolveComandaKitchenIndicator(comandaId, mode = "entendi") {
     const actor = currentActor();
-    if (!actor || (actor.role !== "waiter" && actor.role !== "admin")) {
+    if (!actor || (actor.role !== "waiter" && !isAdminOrDev(actor))) {
       alert("Somente garcom ou administrador podem resolver alertas.");
       return;
     }
@@ -3951,8 +4187,9 @@
     }
 
     sessionUserId = user.id;
-    persistSessionUserId(rememberLogin ? sessionUserId : null);
+    persistSessionUserId(sessionUserId, rememberLogin);
     saveState({ skipCloud: true, touchMeta: false });
+    broadcastPresencePing();
     render();
   }
 
@@ -3967,6 +4204,7 @@
     uiState.waiterDraftByComanda = {};
     uiState.itemSelector = { open: false, comandaId: "", mode: "increment" };
     saveState({ skipCloud: true, touchMeta: false });
+    broadcastPresencePing();
     render();
   }
 
@@ -4594,7 +4832,7 @@
 
   function setKitchenItemPriority(comandaId, itemId, priority) {
     const actor = currentActor();
-    if (actor.role !== "admin") {
+    if (!isAdminOrDev(actor)) {
       alert("Somente administrador pode alterar prioridade de pedido.");
       return;
     }
@@ -4666,7 +4904,7 @@
 
   function setKitchenItemStatus(comandaId, itemId, status) {
     const actor = currentActor();
-    if (actor.role !== "cook" && actor.role !== "admin") {
+    if (actor.role !== "cook" && !isAdminOrDev(actor)) {
       alert("Apenas cozinheiro ou administrador podem alterar status da cozinha.");
       return;
     }
@@ -5096,7 +5334,7 @@
 
   function saveKitchenPrinterConfigFromUi() {
     const actor = currentActor();
-    if (actor.role !== "admin") {
+    if (!isAdminOrDev(actor)) {
       alert("Somente administrador pode configurar a impressora da cozinha.");
       return;
     }
@@ -5117,7 +5355,7 @@
 
   function printKitchenTestTicket() {
     const actor = currentActor();
-    if (actor.role !== "admin") {
+    if (!isAdminOrDev(actor)) {
       alert("Somente administrador pode testar a impressora da cozinha.");
       return;
     }
@@ -5142,7 +5380,7 @@
 
   function printKitchenTicket(comanda, items, actor, options = {}) {
     if (!comanda || !Array.isArray(items) || !items.length) return;
-    if (!actor || (actor.role !== "waiter" && actor.role !== "admin")) return;
+    if (!actor || (actor.role !== "waiter" && !isAdminOrDev(actor))) return;
 
     const kitchenItems = items.filter((item) => item && itemNeedsKitchen(item) && !item.canceled);
     if (!kitchenItems.length) return;
@@ -5325,7 +5563,9 @@
   }
 
   function validateAdminCredentials(loginValue, password) {
-    return state.users.find((u) => u.role === "admin" && u.active && u.login === loginValue && u.password === password) || null;
+    const user = findUserByLoginPassword(loginValue, password);
+    if (!user || !user.active || !isAdminOrDev(user)) return null;
+    return user;
   }
 
   function saveFinanceInventory(form) {
@@ -5395,6 +5635,7 @@
       const role = button.dataset.role;
       const tab = button.dataset.tab;
       if (role === "admin") uiState.adminTab = tab;
+      if (role === "dev") uiState.devTab = tab;
       if (role === "waiter") uiState.waiterTab = tab;
       if (role === "cook") uiState.cookTab = tab;
       render();
@@ -5802,9 +6043,9 @@
     if (event.key !== STORAGE_KEY || !event.newValue) return;
     try {
       const incoming = JSON.parse(event.newValue);
-      const localUpdated = new Date(state.meta?.updatedAt || 0).getTime();
-      const incomingUpdated = new Date(incoming?.meta?.updatedAt || 0).getTime();
-      if (Number.isFinite(localUpdated) && Number.isFinite(incomingUpdated) && incomingUpdated < localUpdated) {
+      const localUpdated = parseUpdatedAtTimestamp(state.meta?.updatedAt);
+      const incomingUpdated = parseUpdatedAtTimestamp(incoming?.meta?.updatedAt);
+      if (incomingUpdated && localUpdated && incomingUpdated < localUpdated) {
         return;
       }
       adoptIncomingState(incoming);
@@ -5835,12 +6076,20 @@
     if (user?.role === "admin" && (uiState.adminTab === "monitor" || (uiState.adminTab === "comandas" && uiState.waiterTab === "cozinha"))) {
       render();
     }
+    if (user?.role === "dev" && (uiState.devTab === "monitor" || uiState.devTab === "devices")) {
+      render();
+    }
   }, 5000);
+
+  setInterval(() => {
+    broadcastPresencePing();
+  }, DEVICE_PRESENCE_PING_MS);
 
   setInterval(() => {
     void pullStateFromSupabase();
   }, 12000);
 
+  broadcastPresencePing();
   void connectSupabase();
   render();
 })();
