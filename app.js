@@ -250,6 +250,72 @@
     return Number.isFinite(n) ? n : 0;
   }
 
+  function normalizeDeletedIdList(source) {
+    if (!Array.isArray(source)) return [];
+    return [...new Set(source.map((id) => String(id || "").trim()).filter(Boolean))];
+  }
+
+  function mergedRowsById(localRows, remoteRows, deletedIds = []) {
+    const deletedSet = new Set(normalizeDeletedIdList(deletedIds));
+    const map = new Map();
+    for (const row of Array.isArray(remoteRows) ? remoteRows : []) {
+      const id = String(row?.id ?? "").trim();
+      if (!id || deletedSet.has(id)) continue;
+      map.set(id, { ...row });
+    }
+    for (const row of Array.isArray(localRows) ? localRows : []) {
+      const id = String(row?.id ?? "").trim();
+      if (!id || deletedSet.has(id)) continue;
+      map.set(id, { ...row });
+    }
+    return [...map.values()].sort((a, b) => Number(a?.id || 0) - Number(b?.id || 0));
+  }
+
+  function mergeStateForCloud(localState, remoteState) {
+    const localMeta = localState?.meta || {};
+    const remoteMeta = remoteState?.meta || {};
+    const deletedProductIds = normalizeDeletedIdList([
+      ...(Array.isArray(localMeta.deletedProductIds) ? localMeta.deletedProductIds : []),
+      ...(Array.isArray(remoteMeta.deletedProductIds) ? remoteMeta.deletedProductIds : [])
+    ]);
+    const deletedUserIds = normalizeDeletedIdList([
+      ...(Array.isArray(localMeta.deletedUserIds) ? localMeta.deletedUserIds : []),
+      ...(Array.isArray(remoteMeta.deletedUserIds) ? remoteMeta.deletedUserIds : [])
+    ]);
+
+    const merged = {
+      ...remoteState,
+      ...localState,
+      users: mergedRowsById(localState?.users, remoteState?.users, deletedUserIds),
+      products: mergedRowsById(localState?.products, remoteState?.products, deletedProductIds),
+      meta: {
+        ...(remoteState?.meta || {}),
+        ...(localState?.meta || {}),
+        deletedProductIds,
+        deletedUserIds
+      }
+    };
+    merged.seq = merged.seq || {};
+    const maxUserId = Math.max(0, ...(Array.isArray(merged.users) ? merged.users : []).map((u) => Number(u?.id || 0)));
+    const maxProductId = Math.max(0, ...(Array.isArray(merged.products) ? merged.products : []).map((p) => Number(p?.id || 0)));
+    merged.seq.user = Math.max(Number(merged.seq.user || 0), maxUserId + 1);
+    merged.seq.product = Math.max(Number(merged.seq.product || 0), maxProductId + 1);
+    return merged;
+  }
+
+  function trackDeletedEntity(metaKey, entityId) {
+    const id = String(entityId ?? "").trim();
+    if (!id) return;
+    state.meta = state.meta || {};
+    const current = normalizeDeletedIdList(state.meta[metaKey]);
+    if (current.includes(id)) {
+      state.meta[metaKey] = current;
+      return;
+    }
+    current.push(id);
+    state.meta[metaKey] = current.slice(-800);
+  }
+
   function initialState() {
     return {
       users: [
@@ -280,6 +346,8 @@
       meta: {
         updatedAt: isoNow(),
         lastCloudSyncAt: null,
+        deletedProductIds: [],
+        deletedUserIds: [],
         [FINAL_CLIENT_PREP_FLAG]: true,
         [FINAL_CLIENT_PREP_MARKER]: isoNow(),
         [FINAL_CLIENT_PREP_SIGNATURE_KEY]: FINAL_CLIENT_PREP_SIGNATURE
@@ -467,6 +535,8 @@
       meta: {
         ...fallback.meta,
         ...(parsed.meta || {}),
+        deletedProductIds: normalizeDeletedIdList(parsed.meta?.deletedProductIds),
+        deletedUserIds: normalizeDeletedIdList(parsed.meta?.deletedUserIds),
         [FINAL_CLIENT_PREP_FLAG]: parsed.meta?.[FINAL_CLIENT_PREP_FLAG] === true,
         [FINAL_CLIENT_PREP_MARKER]:
           typeof parsed.meta?.[FINAL_CLIENT_PREP_MARKER] === "string" && parsed.meta?.[FINAL_CLIENT_PREP_MARKER]
@@ -687,15 +757,26 @@
     supabaseCtx.syncQueued = false;
     const sanitized = sanitizeStateForCloud(state);
     try {
+      let mergedForCloud = sanitized;
+      const { data: remoteData, error: remoteErr } = await client
+        .from("restobar_state")
+        .select("payload,updated_at")
+        .eq("id", "main")
+        .maybeSingle();
+      if (!remoteErr && remoteData?.payload) {
+        mergedForCloud = mergeStateForCloud(sanitized, remoteData.payload);
+      }
+
       const payload = {
         id: "main",
         updated_at: isoNow(),
-        payload: sanitized
+        payload: mergedForCloud
       };
       const { error } = await client.from("restobar_state").upsert(payload);
       if (error) {
         throw error;
       }
+      adoptIncomingState(mergedForCloud);
       state.meta.lastCloudSyncAt = isoNow();
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       setSupabaseStatus("conectado");
@@ -4293,6 +4374,7 @@
     if (!confirm(`Apagar produto ${p.name}?`)) return;
 
     state.products = state.products.filter((prod) => prod.id !== productId);
+    trackDeletedEntity("deletedProductIds", productId);
     appendAudit({ actor, type: "produto_delete", detail: `Produto ${p.name} removido.` });
     saveState();
     render();
@@ -4455,6 +4537,7 @@
     if (!confirm(`Apagar acesso de ${roleLabel(employee.role)} ${employee.name}?`)) return;
 
     state.users = state.users.filter((u) => u.id !== userId);
+    trackDeletedEntity("deletedUserIds", userId);
     appendAudit({ actor, type: "funcionario_delete", detail: `${roleLabel(employee.role)} ${employee.name} removido.` });
 
     if (sessionUserId === userId) {
@@ -6045,6 +6128,9 @@
       const incoming = JSON.parse(event.newValue);
       const localUpdated = parseUpdatedAtTimestamp(state.meta?.updatedAt);
       const incomingUpdated = parseUpdatedAtTimestamp(incoming?.meta?.updatedAt);
+      if (localUpdated > 0 && incomingUpdated <= 0) {
+        return;
+      }
       if (incomingUpdated && localUpdated && incomingUpdated < localUpdated) {
         return;
       }
