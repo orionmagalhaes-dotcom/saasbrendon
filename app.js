@@ -1581,10 +1581,10 @@
             <td data-label="Preparo (min)">${Number(p.prepTime || 0)}</td>
             <td data-label="Custo">${money(p.cost || 0)}</td>
             <td data-label="Acoes">
-              <div class="actions">
-                <button class="btn secondary" data-action="edit-product" data-id="${p.id}">Editar</button>
-                <button class="btn secondary" data-action="toggle-product-availability" data-id="${p.id}">${p.available === false ? "Disponibilizar" : "Indisponibilizar"}</button>
-                <button class="btn danger" data-action="delete-product" data-id="${p.id}">Apagar</button>
+              <div class="actions product-row-actions">
+                <button class="btn secondary compact-action" title="Editar produto" data-action="edit-product" data-id="${p.id}">Editar</button>
+                <button class="btn secondary compact-action" title="${p.available === false ? "Disponibilizar produto" : "Indisponibilizar produto"}" data-action="toggle-product-availability" data-id="${p.id}">${p.available === false ? "Dispon." : "Indisp."}</button>
+                <button class="btn danger compact-action" title="Apagar produto" data-action="delete-product" data-id="${p.id}">Apagar</button>
               </div>
             </td>
           </tr>

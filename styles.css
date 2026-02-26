@@ -831,6 +831,23 @@ th {
   gap: 0.45rem;
 }
 
+.product-row-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.28rem;
+  width: 100%;
+}
+
+.product-row-actions .btn.compact-action {
+  min-width: 0;
+  min-height: 32px;
+  padding: 0.3rem 0.36rem;
+  font-size: 0.76rem;
+  font-weight: 800;
+  line-height: 1.08;
+  white-space: nowrap;
+}
+
 .comanda-grid {
   display: grid;
   gap: 0.8rem;
