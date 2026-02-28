@@ -1,4 +1,4 @@
-const CACHE_NAME = "restobar-cache-v8";
+const CACHE_NAME = "restobar-cache-v9";
 const ASSETS = [
   "./",
   "./index.html",
