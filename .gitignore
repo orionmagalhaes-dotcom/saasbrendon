@@ -3,3 +3,5 @@ dist/
 npm-debug.log*
 .DS_Store
 Thumbs.db
+.tmp_state_raw.json
+supabase/state-backups/

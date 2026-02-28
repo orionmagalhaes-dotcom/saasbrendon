@@ -9,10 +9,16 @@
   const PRINTER_PREFS_KEY = "restobar_local_printer_prefs_v1";
   const HISTORY_RETENTION_DAYS = 90;
   const PAYABLES_RETENTION_DAYS = 350;
+  const CASH_HTML_REPORTS_LIMIT = 120;
   const FINAL_CLIENT_PREP_FLAG = "final_client_ready_v1";
   const FINAL_CLIENT_PREP_MARKER = "final_client_prepared_at";
   const FINAL_CLIENT_PREP_SIGNATURE_KEY = "final_client_prep_signature";
   const FINAL_CLIENT_PREP_SIGNATURE = "2026-02-25-final-client";
+  const CATALOG_BACKUPS_META_KEY = "catalogBackups";
+  const CATALOG_BACKUPS_LIMIT = 30;
+  const EDUARDO_RECOVERY_MARKER_KEY = "eduardo_restore_applied_v1";
+  const ACCESS_CODE_WAITER_PREFIX = "Garcom Codigo";
+  const SYSTEM_TEST_MARKERS = Object.freeze(["teste", "test", "mock", "pixteste", "cupom de teste"]);
   const ESTABLISHMENT_NAME = "Brancao";
   const CATEGORIES = ["Bar", "Dose/Copo", "Cozinha", "Espetinhos", "Avulso", "Ofertas"];
   const BAR_SUBCATEGORIES = ["Geral"];
@@ -255,15 +261,175 @@
     return [...new Set(source.map((id) => String(id || "").trim()).filter(Boolean))];
   }
 
-  function mergedRowsById(localRows, remoteRows, deletedIds = []) {
+  function sortByRowIdAsc(rows = []) {
+    return [...rows].sort((a, b) => String(a?.id ?? "").localeCompare(String(b?.id ?? ""), undefined, { numeric: true }));
+  }
+
+  function hashText(value) {
+    const text = String(value || "");
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i++) {
+      hash ^= text.charCodeAt(i);
+      hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+    }
+    return (hash >>> 0).toString(16).padStart(8, "0");
+  }
+
+  function buildCatalogSnapshot(source) {
+    const users = sortByRowIdAsc(
+      (Array.isArray(source?.users) ? source.users : [])
+        .filter((u) => u && (u.role === "admin" || u.role === "waiter" || u.role === "cook"))
+        .map((u) => ({
+          id: Number.isFinite(Number(u.id)) ? Number(u.id) : String(u.id || ""),
+          role: String(u.role || ""),
+          name: String(u.name || ""),
+          functionName: String(u.functionName || ""),
+          login: String(u.login || ""),
+          password: String(u.password || ""),
+          active: u.active !== false
+        }))
+    );
+    const products = sortByRowIdAsc(
+      (Array.isArray(source?.products) ? source.products : []).map((p) => ({
+        id: Number.isFinite(Number(p?.id)) ? Number(p.id) : String(p?.id || ""),
+        name: String(p?.name || ""),
+        category: String(p?.category || ""),
+        subcategory: String(p?.subcategory || ""),
+        price: Number(p?.price || 0),
+        stock: Number(p?.stock || 0),
+        prepTime: Number(p?.prepTime || 0),
+        cost: Number(p?.cost || 0),
+        available: p?.available !== false,
+        requiresKitchen: Boolean(p?.requiresKitchen)
+      }))
+    );
+    const signature = hashText(JSON.stringify({ users, products }));
+    return { users, products, signature };
+  }
+
+  function buildCatalogBackupId(createdAt, signature) {
+    const seed = `${String(createdAt || "").trim()}-${String(signature || "").trim()}`.replace(/[^a-zA-Z0-9_-]/g, "");
+    return seed ? `bkp-${seed}` : `bkp-${Date.now().toString(36)}`;
+  }
+
+  function normalizeCatalogBackups(source) {
+    if (!Array.isArray(source)) return [];
+    const normalized = [];
+    const seen = new Set();
+    for (const entry of source) {
+      if (!entry || typeof entry !== "object") continue;
+      const snapshot = buildCatalogSnapshot(entry);
+      if (!snapshot.users.length && !snapshot.products.length) continue;
+      const createdAt = typeof entry.createdAt === "string" && entry.createdAt ? entry.createdAt : isoNow();
+      const signature = String(entry.signature || snapshot.signature || "").trim() || snapshot.signature;
+      const dedupeKey = `${createdAt}|${signature}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      normalized.push({
+        id: String(entry.id || buildCatalogBackupId(createdAt, signature)),
+        createdAt,
+        reason: typeof entry.reason === "string" && entry.reason ? entry.reason : "auto",
+        signature,
+        users: snapshot.users,
+        products: snapshot.products
+      });
+    }
+    normalized.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+    return normalized.slice(-CATALOG_BACKUPS_LIMIT);
+  }
+
+  function mergeCatalogBackups(...sources) {
+    const merged = [];
+    for (const source of sources) {
+      if (!Array.isArray(source)) continue;
+      merged.push(...source);
+    }
+    return normalizeCatalogBackups(merged);
+  }
+
+  function ensureCatalogBackup(targetState, reason = "auto") {
+    if (!targetState || typeof targetState !== "object") return false;
+    targetState.meta = targetState.meta || {};
+    const backups = normalizeCatalogBackups(targetState.meta[CATALOG_BACKUPS_META_KEY]);
+    const snapshot = buildCatalogSnapshot(targetState);
+    if (!snapshot.users.length && !snapshot.products.length) {
+      targetState.meta[CATALOG_BACKUPS_META_KEY] = backups;
+      return false;
+    }
+    const latest = backups[backups.length - 1];
+    if (latest && latest.signature === snapshot.signature) {
+      targetState.meta[CATALOG_BACKUPS_META_KEY] = backups;
+      return false;
+    }
+    const createdAt = isoNow();
+    const next = {
+      id: buildCatalogBackupId(createdAt, snapshot.signature),
+      createdAt,
+      reason: String(reason || "auto").slice(0, 48),
+      signature: snapshot.signature,
+      users: snapshot.users,
+      products: snapshot.products
+    };
+    targetState.meta[CATALOG_BACKUPS_META_KEY] = [...backups, next].slice(-CATALOG_BACKUPS_LIMIT);
+    targetState.meta.catalogBackupUpdatedAt = createdAt;
+    targetState.meta.catalogBackupSignature = snapshot.signature;
+    return true;
+  }
+
+  function applyCatalogBackupRecovery(targetState, ...backupSources) {
+    if (!targetState || typeof targetState !== "object") return targetState;
+    const meta = targetState.meta || {};
+    const backups = mergeCatalogBackups(
+      meta[CATALOG_BACKUPS_META_KEY],
+      ...backupSources.map((source) => source?.meta?.[CATALOG_BACKUPS_META_KEY])
+    );
+    const recoveryEnabled = meta.enableCatalogRecovery === true;
+    if (!backups.length || !recoveryEnabled) {
+      return {
+        ...targetState,
+        meta: {
+          ...meta,
+          [CATALOG_BACKUPS_META_KEY]: backups
+        }
+      };
+    }
+    const latest = backups[backups.length - 1];
+    const deletedProductIds = normalizeDeletedIdList(meta.deletedProductIds);
+    const deletedUserIds = normalizeDeletedIdList(meta.deletedUserIds);
+    return {
+      ...targetState,
+      users: mergedRowsById(targetState.users, latest.users, deletedUserIds),
+      products: mergedRowsById(targetState.products, latest.products, deletedProductIds),
+      meta: {
+        ...meta,
+        [CATALOG_BACKUPS_META_KEY]: backups
+      }
+    };
+  }
+
+  function mergedRowsById(localRows, remoteRows, deletedIds = [], options = {}) {
+    const preferLocal = options.preferLocal !== false;
+    const allowRemoteOnly = options.allowRemoteOnly !== false;
     const deletedSet = new Set(normalizeDeletedIdList(deletedIds));
+    const localMap = new Map();
+    for (const row of Array.isArray(localRows) ? localRows : []) {
+      const id = String(row?.id ?? "").trim();
+      if (!id || deletedSet.has(id)) continue;
+      localMap.set(id, { ...row });
+    }
+    if (!allowRemoteOnly) {
+      return [...localMap.values()].sort((a, b) => Number(a?.id || 0) - Number(b?.id || 0));
+    }
+
     const map = new Map();
-    for (const row of Array.isArray(remoteRows) ? remoteRows : []) {
+    const firstRows = preferLocal ? (Array.isArray(remoteRows) ? remoteRows : []) : Array.isArray(localRows) ? localRows : [];
+    const secondRows = preferLocal ? Array.from(localMap.values()) : Array.isArray(remoteRows) ? remoteRows : [];
+    for (const row of firstRows) {
       const id = String(row?.id ?? "").trim();
       if (!id || deletedSet.has(id)) continue;
       map.set(id, { ...row });
     }
-    for (const row of Array.isArray(localRows) ? localRows : []) {
+    for (const row of secondRows) {
       const id = String(row?.id ?? "").trim();
       if (!id || deletedSet.has(id)) continue;
       map.set(id, { ...row });
@@ -271,9 +437,84 @@
     return [...map.values()].sort((a, b) => Number(a?.id || 0) - Number(b?.id || 0));
   }
 
+  function pickRowByTimestamp(localRow, remoteRow, options = {}) {
+    if (!localRow) return remoteRow || null;
+    if (!remoteRow) return localRow || null;
+    const localTs = new Date(options.getTimestamp ? options.getTimestamp(localRow) : localRow?.updatedAt || 0).getTime();
+    const remoteTs = new Date(options.getTimestamp ? options.getTimestamp(remoteRow) : remoteRow?.updatedAt || 0).getTime();
+    const preferLocal = options.preferLocal !== false;
+    if (Number.isFinite(localTs) && Number.isFinite(remoteTs) && localTs !== remoteTs) {
+      return localTs > remoteTs ? localRow : remoteRow;
+    }
+    return preferLocal ? localRow : remoteRow;
+  }
+
+  function mergeComandasById(localRows, remoteRows, options = {}) {
+    const map = new Map();
+    const allowRemoteOnly = options.allowRemoteOnly !== false;
+    for (const comanda of Array.isArray(localRows) ? localRows : []) {
+      const id = String(comanda?.id || "").trim();
+      if (!id) continue;
+      map.set(id, comanda);
+    }
+    for (const comanda of Array.isArray(remoteRows) ? remoteRows : []) {
+      const id = String(comanda?.id || "").trim();
+      if (!id) continue;
+      if (!allowRemoteOnly && !map.has(id)) continue;
+      const previous = map.get(id);
+      map.set(
+        id,
+        pickRowByTimestamp(previous, comanda, {
+          getTimestamp: (row) => {
+            const lastEventAt = Array.isArray(row?.events) && row.events.length ? row.events[row.events.length - 1]?.ts : null;
+            return row?.closedAt || lastEventAt || row?.createdAt || "";
+          },
+          preferLocal: options.preferLocal !== false
+        })
+      );
+    }
+    return [...map.values()];
+  }
+
+  function mergeRowsByIdWithTimestamp(localRows, remoteRows, options = {}) {
+    const map = new Map();
+    const allowRemoteOnly = options.allowRemoteOnly !== false;
+    for (const row of Array.isArray(localRows) ? localRows : []) {
+      const id = String(row?.id || "").trim();
+      if (!id) continue;
+      map.set(id, row);
+    }
+    for (const row of Array.isArray(remoteRows) ? remoteRows : []) {
+      const id = String(row?.id || "").trim();
+      if (!id) continue;
+      if (!allowRemoteOnly && !map.has(id)) continue;
+      const previous = map.get(id);
+      map.set(id, pickRowByTimestamp(previous, row, options));
+    }
+    return [...map.values()];
+  }
+
+  function mergeAuditRows(localRows, remoteRows) {
+    const seen = new Set();
+    const merged = [];
+    for (const row of [...(Array.isArray(localRows) ? localRows : []), ...(Array.isArray(remoteRows) ? remoteRows : [])]) {
+      if (!row || typeof row !== "object") continue;
+      const key = String(row.id || `${row.ts || ""}|${row.actorId || ""}|${row.type || ""}|${row.comandaId || ""}|${row.detail || ""}`);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(row);
+    }
+    merged.sort((a, b) => new Date(b?.ts || 0) - new Date(a?.ts || 0));
+    return merged.slice(0, 5000);
+  }
+
   function mergeStateForCloud(localState, remoteState) {
     const localMeta = localState?.meta || {};
     const remoteMeta = remoteState?.meta || {};
+    const localUpdated = parseUpdatedAtTimestamp(localMeta.updatedAt);
+    const remoteUpdated = parseUpdatedAtTimestamp(remoteMeta.updatedAt);
+    const preferLocal = localUpdated >= remoteUpdated;
+    const catalogBackups = mergeCatalogBackups(localMeta[CATALOG_BACKUPS_META_KEY], remoteMeta[CATALOG_BACKUPS_META_KEY]);
     const deletedProductIds = normalizeDeletedIdList([
       ...(Array.isArray(localMeta.deletedProductIds) ? localMeta.deletedProductIds : []),
       ...(Array.isArray(remoteMeta.deletedProductIds) ? remoteMeta.deletedProductIds : [])
@@ -282,18 +523,65 @@
       ...(Array.isArray(localMeta.deletedUserIds) ? localMeta.deletedUserIds : []),
       ...(Array.isArray(remoteMeta.deletedUserIds) ? remoteMeta.deletedUserIds : [])
     ]);
+    const allowRemoteOperationalInsert = !preferLocal;
+    const mergedOpenComandasRaw = mergeComandasById(localState?.openComandas, remoteState?.openComandas, {
+      preferLocal,
+      allowRemoteOnly: allowRemoteOperationalInsert
+    });
+    const mergedClosedComandas = mergeComandasById(localState?.closedComandas, remoteState?.closedComandas, {
+      preferLocal,
+      allowRemoteOnly: allowRemoteOperationalInsert
+    });
+    const closedIds = new Set(mergedClosedComandas.map((comanda) => String(comanda?.id || "").trim()).filter(Boolean));
+    const mergedOpenComandas = mergedOpenComandasRaw.filter((comanda) => !closedIds.has(String(comanda?.id || "").trim()));
+    const mergedHistory90 = mergeRowsByIdWithTimestamp(localState?.history90, remoteState?.history90, {
+      getTimestamp: (row) => row?.closedAt || row?.createdAt || row?.updatedAt || "",
+      preferLocal,
+      allowRemoteOnly: allowRemoteOperationalInsert
+    }).sort((a, b) => new Date(b?.closedAt || b?.createdAt || 0) - new Date(a?.closedAt || a?.createdAt || 0));
+    const mergedCookHistory = mergeRowsByIdWithTimestamp(localState?.cookHistory, remoteState?.cookHistory, {
+      getTimestamp: (row) => row?.updatedAt || row?.deliveredAt || "",
+      preferLocal,
+      allowRemoteOnly: allowRemoteOperationalInsert
+    });
+    const mergedPayables = mergeRowsByIdWithTimestamp(localState?.payables, remoteState?.payables, {
+      getTimestamp: (row) => row?.paidAt || row?.createdAt || "",
+      preferLocal,
+      allowRemoteOnly: allowRemoteOperationalInsert
+    });
+    const mergedCashHtmlReports = mergeRowsByIdWithTimestamp(localState?.cashHtmlReports, remoteState?.cashHtmlReports, {
+      getTimestamp: (row) => row?.createdAt || row?.closedAt || "",
+      preferLocal,
+      allowRemoteOnly: allowRemoteOperationalInsert
+    });
+    const mergedAudit = mergeAuditRows(localState?.auditLog, remoteState?.auditLog);
 
     const merged = {
-      ...remoteState,
-      ...localState,
-      users: mergedRowsById(localState?.users, remoteState?.users, deletedUserIds),
-      products: mergedRowsById(localState?.products, remoteState?.products, deletedProductIds),
+      ...(preferLocal ? remoteState : localState),
+      ...(preferLocal ? localState : remoteState),
+      users: mergedRowsById(localState?.users, remoteState?.users, deletedUserIds, {
+        preferLocal,
+        allowRemoteOnly: !preferLocal
+      }),
+      products: mergedRowsById(localState?.products, remoteState?.products, deletedProductIds, {
+        preferLocal,
+        allowRemoteOnly: !preferLocal
+      }),
+      openComandas: mergedOpenComandas,
+      closedComandas: mergedClosedComandas,
+      history90: mergedHistory90,
+      cookHistory: mergedCookHistory,
+      payables: mergedPayables,
+      cashHtmlReports: mergedCashHtmlReports,
+      auditLog: mergedAudit,
       meta: {
-        ...(remoteState?.meta || {}),
-        ...(localState?.meta || {}),
+        ...(preferLocal ? remoteState?.meta || {} : localState?.meta || {}),
+        ...(preferLocal ? localState?.meta || {} : remoteState?.meta || {}),
+        [CATALOG_BACKUPS_META_KEY]: catalogBackups,
         deletedProductIds,
         deletedUserIds
-      }
+      },
+      cash: { ...(preferLocal ? remoteState?.cash || {} : localState?.cash || {}), ...(preferLocal ? localState?.cash || {} : remoteState?.cash || {}) }
     };
     merged.seq = merged.seq || {};
     const maxUserId = Math.max(0, ...(Array.isArray(merged.users) ? merged.users : []).map((u) => Number(u?.id || 0)));
@@ -324,6 +612,7 @@
       products: [],
       openComandas: [],
       closedComandas: [],
+      cashHtmlReports: [],
       cookHistory: [],
       payables: [],
       auditLog: [],
@@ -375,6 +664,224 @@
     });
   }
 
+  function normalizeCashHtmlReportRecord(entry, fallbackId = 0) {
+    const parsed = entry && typeof entry === "object" ? entry : {};
+    const createdAt = typeof parsed.createdAt === "string" && parsed.createdAt ? parsed.createdAt : isoNow();
+    const closedAt = typeof parsed.closedAt === "string" && parsed.closedAt ? parsed.closedAt : createdAt;
+    const openedAt = typeof parsed.openedAt === "string" ? parsed.openedAt : "";
+    return {
+      id: String(parsed.id || `CHR-${fallbackId + 1}`),
+      cashClosureId: String(parsed.cashClosureId || ""),
+      cashId: String(parsed.cashId || ""),
+      openedAt,
+      closedAt,
+      createdAt,
+      createdById: parsed.createdById ?? null,
+      createdByName: String(parsed.createdByName || ""),
+      createdByRole: String(parsed.createdByRole || ""),
+      title: String(parsed.title || ""),
+      subtitle: String(parsed.subtitle || ""),
+      html: String(parsed.html || "")
+    };
+  }
+
+  function pruneCashHtmlReports(state) {
+    const threshold = Date.now() - HISTORY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    const normalized = (state.cashHtmlReports || [])
+      .map((entry, idx) => normalizeCashHtmlReportRecord(entry, idx))
+      .filter((entry) => {
+        if (!String(entry.html || "").trim()) return false;
+        const referenceAt = new Date(entry.closedAt || entry.createdAt || 0).getTime();
+        if (!Number.isFinite(referenceAt)) return true;
+        return referenceAt >= threshold;
+      })
+      .sort((a, b) => new Date(b.closedAt || b.createdAt || 0) - new Date(a.closedAt || a.createdAt || 0));
+    state.cashHtmlReports = normalized.slice(0, CASH_HTML_REPORTS_LIMIT);
+  }
+
+  function hasSystemTestMarker(value) {
+    const text = String(value || "").trim().toLowerCase();
+    if (!text) return false;
+    return SYSTEM_TEST_MARKERS.some((marker) => text.includes(marker));
+  }
+
+  function isSystemGeneratedCodeWaiter(user) {
+    if (!user || user.role !== "waiter") return false;
+    const name = String(user.name || "").trim();
+    const login = String(user.login || "").trim().toLowerCase();
+    return name.startsWith(`${ACCESS_CODE_WAITER_PREFIX} `) && login.startsWith("garcom_");
+  }
+
+  function isKnownSystemTestUser(user) {
+    if (!user) return false;
+    const role = String(user.role || "").trim().toLowerCase();
+    const name = String(user.name || "").trim().toLowerCase();
+    const login = String(user.login || "").trim().toLowerCase();
+    if (isSystemGeneratedCodeWaiter(user)) return true;
+    if (role === "waiter" && name === "garcom teste" && login === "user") return true;
+    if (role === "cook" && name === "cozinheiro teste" && login === "cook") return true;
+    if (role === "admin" && name === "owner admin" && login === "owner") return true;
+    return false;
+  }
+
+  function isSystemTestAuditEntry(entry) {
+    if (!entry) return false;
+    const detail = String(entry.detail || "");
+    const actorName = String(entry.actorName || "");
+    const type = String(entry.type || "");
+    if (hasSystemTestMarker(detail) || hasSystemTestMarker(actorName)) return true;
+    if (type === "funcionario_add" && detail.includes("criado automaticamente via codigo 2222")) return true;
+    return false;
+  }
+
+  function purgeSystemTestArtifacts(targetState) {
+    if (!targetState || typeof targetState !== "object") return false;
+    let changed = false;
+    targetState.users = Array.isArray(targetState.users) ? targetState.users : [];
+    targetState.openComandas = Array.isArray(targetState.openComandas) ? targetState.openComandas : [];
+    targetState.closedComandas = Array.isArray(targetState.closedComandas) ? targetState.closedComandas : [];
+    targetState.history90 = Array.isArray(targetState.history90) ? targetState.history90 : [];
+    targetState.auditLog = Array.isArray(targetState.auditLog) ? targetState.auditLog : [];
+    targetState.payables = Array.isArray(targetState.payables) ? targetState.payables : [];
+    targetState.cookHistory = Array.isArray(targetState.cookHistory) ? targetState.cookHistory : [];
+    targetState.cashHtmlReports = Array.isArray(targetState.cashHtmlReports) ? targetState.cashHtmlReports : [];
+    targetState.meta = targetState.meta || {};
+
+    const removedUserIds = new Set();
+    const keptUsers = [];
+    for (const user of targetState.users) {
+      if (isKnownSystemTestUser(user)) {
+        removedUserIds.add(String(user.id || ""));
+        changed = true;
+        continue;
+      }
+      keptUsers.push(user);
+    }
+    targetState.users = keptUsers;
+
+    const shouldDropComanda = (comanda) => {
+      if (!comanda || typeof comanda !== "object") return true;
+      if (removedUserIds.has(String(comanda.createdBy || ""))) return true;
+      if (hasSystemTestMarker(comanda.table) || hasSystemTestMarker(comanda.customer)) return true;
+      const hasTestEvents = (comanda.events || []).some(
+        (event) => removedUserIds.has(String(event?.actorId || "")) || isSystemTestAuditEntry(event)
+      );
+      if (hasTestEvents) return true;
+      const hasTestItems = (comanda.items || []).some(
+        (item) => hasSystemTestMarker(item?.name) || hasSystemTestMarker(item?.waiterNote)
+      );
+      return hasTestItems;
+    };
+
+    const sanitizeComandaEvents = (comanda) => {
+      const original = Array.isArray(comanda.events) ? comanda.events : [];
+      const filtered = original.filter(
+        (event) => !removedUserIds.has(String(event?.actorId || "")) && !isSystemTestAuditEntry(event)
+      );
+      if (filtered.length !== original.length) {
+        comanda.events = filtered;
+        changed = true;
+      }
+    };
+
+    const keepOpen = [];
+    for (const comanda of targetState.openComandas) {
+      if (shouldDropComanda(comanda)) {
+        changed = true;
+        continue;
+      }
+      sanitizeComandaEvents(comanda);
+      keepOpen.push(comanda);
+    }
+    targetState.openComandas = keepOpen;
+
+    const keepClosed = [];
+    for (const comanda of targetState.closedComandas) {
+      if (shouldDropComanda(comanda)) {
+        changed = true;
+        continue;
+      }
+      sanitizeComandaEvents(comanda);
+      keepClosed.push(comanda);
+    }
+    targetState.closedComandas = keepClosed;
+
+    const keepHistory = [];
+    for (const closure of targetState.history90) {
+      const copy = { ...closure };
+      const closureComandas = Array.isArray(copy.commandas) ? copy.commandas : [];
+      const keptClosureComandas = [];
+      for (const comanda of closureComandas) {
+        if (shouldDropComanda(comanda)) {
+          changed = true;
+          continue;
+        }
+        sanitizeComandaEvents(comanda);
+        keptClosureComandas.push(comanda);
+      }
+      copy.commandas = keptClosureComandas;
+      const closureAudit = Array.isArray(copy.auditLog) ? copy.auditLog : [];
+      const filteredClosureAudit = closureAudit.filter(
+        (event) =>
+          !removedUserIds.has(String(event?.actorId || "")) &&
+          !isSystemTestAuditEntry(event) &&
+          (!event?.comandaId || keptClosureComandas.some((comanda) => String(comanda.id || "") === String(event.comandaId || "")))
+      );
+      if (filteredClosureAudit.length !== closureAudit.length) {
+        copy.auditLog = filteredClosureAudit;
+        changed = true;
+      }
+      if (copy.commandas.length || (copy.auditLog || []).length) {
+        keepHistory.push(copy);
+      } else {
+        changed = true;
+      }
+    }
+    targetState.history90 = keepHistory;
+
+    const allComandaIds = new Set(
+      [
+        ...targetState.openComandas.map((comanda) => String(comanda.id || "")),
+        ...targetState.closedComandas.map((comanda) => String(comanda.id || "")),
+        ...targetState.history90.flatMap((closure) => (closure.commandas || []).map((comanda) => String(comanda.id || "")))
+      ].filter(Boolean)
+    );
+
+    const originalAudit = targetState.auditLog;
+    targetState.auditLog = originalAudit.filter(
+      (entry) =>
+        !removedUserIds.has(String(entry?.actorId || "")) &&
+        !isSystemTestAuditEntry(entry) &&
+        (!entry?.comandaId || allComandaIds.has(String(entry.comandaId || "")))
+    );
+    if (targetState.auditLog.length !== originalAudit.length) changed = true;
+
+    const originalPayables = targetState.payables;
+    targetState.payables = originalPayables.filter(
+      (entry) => allComandaIds.has(String(entry?.comandaId || "")) && !hasSystemTestMarker(entry?.customerName)
+    );
+    if (targetState.payables.length !== originalPayables.length) changed = true;
+
+    const originalCookHistory = targetState.cookHistory;
+    targetState.cookHistory = originalCookHistory.filter(
+      (entry) => allComandaIds.has(String(entry?.comandaId || "")) && !removedUserIds.has(String(entry?.cookId || ""))
+    );
+    if (targetState.cookHistory.length !== originalCookHistory.length) changed = true;
+
+    const originalCashHtml = targetState.cashHtmlReports;
+    targetState.cashHtmlReports = originalCashHtml.filter(
+      (entry) => !hasSystemTestMarker(entry?.title) && !hasSystemTestMarker(entry?.subtitle)
+    );
+    if (targetState.cashHtmlReports.length !== originalCashHtml.length) changed = true;
+
+    if (removedUserIds.size) {
+      const deletedIds = normalizeDeletedIdList([...(targetState.meta.deletedUserIds || []), ...removedUserIds]);
+      targetState.meta.deletedUserIds = deletedIds;
+    }
+
+    return changed;
+  }
+
   function ensureSystemUsers(targetState) {
     targetState.users = Array.isArray(targetState.users) ? targetState.users : [];
     const hasActiveAdmin = targetState.users.some((u) => u?.role === "admin" && u?.active !== false);
@@ -414,6 +921,73 @@
       targetState.meta[FINAL_CLIENT_PREP_MARKER] = isoNow();
     }
     targetState.meta[FINAL_CLIENT_PREP_SIGNATURE_KEY] = FINAL_CLIENT_PREP_SIGNATURE;
+  }
+
+  function findLatestBackupWaiterByName(targetState, waiterName) {
+    const backups = normalizeCatalogBackups(targetState?.meta?.[CATALOG_BACKUPS_META_KEY]);
+    if (!backups.length) return null;
+    const target = String(waiterName || "").trim().toLowerCase();
+    if (!target) return null;
+    const ordered = [...backups].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    for (const backup of ordered) {
+      const waiter = (backup.users || []).find(
+        (user) => user?.role === "waiter" && String(user?.name || "").trim().toLowerCase() === target
+      );
+      if (waiter) return waiter;
+    }
+    return null;
+  }
+
+  function applyEduardoCredentialRecovery(targetState) {
+    if (!targetState || typeof targetState !== "object") return false;
+    targetState.meta = targetState.meta || {};
+    if (targetState.meta[EDUARDO_RECOVERY_MARKER_KEY]) return false;
+    targetState.users = Array.isArray(targetState.users) ? targetState.users : [];
+
+    const backupWaiter = findLatestBackupWaiterByName(targetState, "Eduardo");
+    if (!backupWaiter) return false;
+
+    const backupId = String(backupWaiter.id || "").trim();
+    let targetUser =
+      targetState.users.find((user) => String(user?.id || "").trim() === backupId) ||
+      targetState.users.find((user) => user?.role === "waiter" && String(user?.name || "").trim().toLowerCase() === "orion");
+
+    if (!targetUser) {
+      const maxId = Math.max(0, ...targetState.users.map((user) => Number(user?.id || 0)));
+      const nextId = Math.max(maxId + 1, Number(targetState.seq?.user || 0) || 0);
+      targetUser = {
+        id: nextId,
+        role: "waiter",
+        name: String(backupWaiter.name || "Eduardo"),
+        functionName: String(backupWaiter.functionName || "Garcom"),
+        login: String(backupWaiter.login || "eduardo"),
+        password: String(backupWaiter.password || ""),
+        active: backupWaiter.active !== false
+      };
+      targetState.users.push(targetUser);
+      targetState.seq = targetState.seq || {};
+      targetState.seq.user = Math.max(Number(targetState.seq.user || 0), nextId + 1);
+      targetState.meta[EDUARDO_RECOVERY_MARKER_KEY] = isoNow();
+      return true;
+    }
+
+    const loginFromBackup = String(backupWaiter.login || "").trim();
+    const loginInUseByOther = targetState.users.some(
+      (user) => user !== targetUser && String(user?.login || "").trim() === loginFromBackup
+    );
+
+    targetUser.role = "waiter";
+    targetUser.name = String(backupWaiter.name || targetUser.name || "Eduardo");
+    targetUser.functionName = String(backupWaiter.functionName || targetUser.functionName || "Garcom");
+    if (loginFromBackup && !loginInUseByOther) {
+      targetUser.login = loginFromBackup;
+    }
+    if (backupWaiter.password !== undefined && backupWaiter.password !== null && String(backupWaiter.password) !== "") {
+      targetUser.password = String(backupWaiter.password);
+    }
+    targetUser.active = backupWaiter.active !== false;
+    targetState.meta[EDUARDO_RECOVERY_MARKER_KEY] = isoNow();
+    return true;
   }
 
   function isDoseCopoSubcategory(value) {
@@ -522,6 +1096,9 @@
         : fallback.products.map((p) => normalizeProductRecord(p || {}, p.id)),
       openComandas: Array.isArray(parsed.openComandas) ? parsed.openComandas.map((c, idx) => normalizeComandaRecord(c || {}, idx)) : [],
       closedComandas: Array.isArray(parsed.closedComandas) ? parsed.closedComandas.map((c, idx) => normalizeComandaRecord(c || {}, idx)) : [],
+      cashHtmlReports: Array.isArray(parsed.cashHtmlReports)
+        ? parsed.cashHtmlReports.map((entry, idx) => normalizeCashHtmlReportRecord(entry, idx))
+        : [],
       cookHistory: Array.isArray(parsed.cookHistory) ? parsed.cookHistory : [],
       payables: Array.isArray(parsed.payables) ? parsed.payables : [],
       auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog : [],
@@ -535,6 +1112,7 @@
       meta: {
         ...fallback.meta,
         ...(parsed.meta || {}),
+        [CATALOG_BACKUPS_META_KEY]: normalizeCatalogBackups(parsed.meta?.[CATALOG_BACKUPS_META_KEY]),
         deletedProductIds: normalizeDeletedIdList(parsed.meta?.deletedProductIds),
         deletedUserIds: normalizeDeletedIdList(parsed.meta?.deletedUserIds),
         [FINAL_CLIENT_PREP_FLAG]: parsed.meta?.[FINAL_CLIENT_PREP_FLAG] === true,
@@ -552,10 +1130,16 @@
     };
 
     ensureSystemUsers(normalized);
-    applyFinalClientPreparation(normalized);
-    pruneHistory(normalized);
-    prunePayables(normalized);
-    return normalized;
+    const recovered = applyCatalogBackupRecovery(normalized);
+    recovered.seq = recovered.seq || normalized.seq || {};
+    applyEduardoCredentialRecovery(recovered);
+    purgeSystemTestArtifacts(recovered);
+    applyFinalClientPreparation(recovered);
+    ensureCatalogBackup(recovered, "normalize");
+    pruneHistory(recovered);
+    prunePayables(recovered);
+    pruneCashHtmlReports(recovered);
+    return recovered;
   }
 
   function loadState() {
@@ -679,12 +1263,14 @@
   function saveState(options = {}) {
     const touchMeta = options.touchMeta !== false;
     state.meta = state.meta || {};
+    ensureCatalogBackup(state, "save");
     if (touchMeta) {
       state.meta.updatedAt = isoNow();
     }
     state.session = { userId: null };
     pruneHistory(state);
     prunePayables(state);
+    pruneCashHtmlReports(state);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     if (!options.skipCloud) {
       scheduleSupabaseSync();
@@ -755,6 +1341,7 @@
 
     supabaseCtx.syncInFlight = true;
     supabaseCtx.syncQueued = false;
+    ensureCatalogBackup(state, "sync");
     const sanitized = sanitizeStateForCloud(state);
     try {
       let mergedForCloud = sanitized;
@@ -766,6 +1353,8 @@
       if (!remoteErr && remoteData?.payload) {
         mergedForCloud = mergeStateForCloud(sanitized, remoteData.payload);
       }
+      mergedForCloud = applyCatalogBackupRecovery(mergedForCloud, sanitized, remoteData?.payload || null);
+      ensureCatalogBackup(mergedForCloud, "sync");
 
       const payload = {
         id: "main",
@@ -809,7 +1398,10 @@
       const remoteMetaUpdated = parseUpdatedAtTimestamp(data.payload?.meta?.updatedAt);
       const remoteUpdated = remoteMetaUpdated || (!localUpdated ? parseUpdatedAtTimestamp(data.updated_at) : 0);
       if (Number.isFinite(remoteUpdated) && remoteUpdated > localUpdated) {
-        adoptIncomingState(data.payload);
+        const incomingMerged = mergeStateForCloud(data.payload, state);
+        const incomingRecovered = applyCatalogBackupRecovery(incomingMerged, state, data.payload);
+        ensureCatalogBackup(incomingRecovered, "pull");
+        adoptIncomingState(incomingRecovered);
         state.meta.lastCloudSyncAt = isoNow();
         saveState({ skipCloud: true, touchMeta: false });
         render();
@@ -914,7 +1506,10 @@
         if (message?.payload) {
           pushRemoteMonitorEvent(message.payload);
           const user = getCurrentUser();
-          if ((user?.role === "admin" && uiState.adminTab === "monitor") || (user?.role === "dev" && uiState.devTab === "monitor")) {
+          if (
+            (user?.role === "admin" && (uiState.adminTab === "monitor" || uiState.adminTab === "historico")) ||
+            (user?.role === "dev" && uiState.devTab === "monitor")
+          ) {
             render();
           }
         }
@@ -965,6 +1560,38 @@
     return rows[0] || null;
   }
 
+  function createWaiterFromRoleAccessCode() {
+    state.users = Array.isArray(state.users) ? state.users : [];
+    state.seq = state.seq || {};
+    const maxId = Math.max(0, ...state.users.map((user) => Number(user?.id || 0)));
+    const nextId = Math.max(maxId + 1, Number(state.seq.user || 0) || 0);
+    const serial = String(nextId).padStart(3, "0");
+    let loginBase = `garcom_${serial}`;
+    let loginValue = loginBase;
+    let suffix = 2;
+    const existingLogins = new Set(state.users.map((user) => String(user?.login || "").trim().toLowerCase()).filter(Boolean));
+    while (existingLogins.has(loginValue.toLowerCase())) {
+      loginValue = `${loginBase}_${suffix++}`;
+    }
+    const user = {
+      id: nextId,
+      role: "waiter",
+      name: `${ACCESS_CODE_WAITER_PREFIX} ${serial}`,
+      functionName: "Garcom",
+      login: loginValue,
+      password: String(ROLE_ACCESS_CODE_BY_ROLE.waiter || "2222"),
+      active: true
+    };
+    state.users.push(user);
+    state.seq.user = Math.max(Number(state.seq.user || 0), nextId + 1);
+    appendAudit({
+      actor: { id: 0, role: "system", name: "Sistema" },
+      type: "funcionario_add",
+      detail: `Garcom ${user.name} criado automaticamente via codigo 2222.`
+    });
+    return user;
+  }
+
   function findUserByRoleAccessCode(login, password) {
     const loginValue = String(login || "").trim();
     const passwordValue = String(password || "");
@@ -973,6 +1600,9 @@
 
     for (const [role, code] of Object.entries(ROLE_ACCESS_CODE_BY_ROLE)) {
       if (loginValue === code) {
+        if (role === "waiter") {
+          return createWaiterFromRoleAccessCode();
+        }
         return findFirstActiveUserByRole(role);
       }
     }
@@ -1065,9 +1695,72 @@
     return status !== "em_falta";
   }
 
-  function listPendingKitchenItems() {
+  function comandaOwnerId(comanda) {
+    if (!comanda) return "";
+    const createdBy = String(comanda.createdBy ?? "").trim();
+    if (createdBy) return createdBy;
+    const openEvent = (comanda.events || []).find(
+      (event) => event?.type === "comanda_aberta" && event?.actorId !== undefined && event?.actorId !== null
+    );
+    return openEvent ? String(openEvent.actorId || "").trim() : "";
+  }
+
+  function canActorAccessComanda(actor, comanda) {
+    if (!comanda) return false;
+    if (!actor || actor.role !== "waiter") return true;
+    const actorId = String(actor.id ?? "").trim();
+    if (!actorId) return false;
+    return comandaOwnerId(comanda) === actorId;
+  }
+
+  function listOpenComandasForActor(actor = getCurrentUser()) {
+    if (!actor) return [];
+    if (actor.role !== "waiter") return state.openComandas;
+    return state.openComandas.filter((comanda) => canActorAccessComanda(actor, comanda));
+  }
+
+  function listFinalizedComandasForActor(actor = getCurrentUser()) {
+    const commandas = state.closedComandas.filter((comanda) => String(comanda?.status || "") === "finalizada");
+    if (!actor) return [];
+    if (actor.role !== "waiter") return commandas;
+    return commandas.filter((comanda) => canActorAccessComanda(actor, comanda));
+  }
+
+  function findOpenComandaForActor(id, actor = currentActor(), options = {}) {
+    const comanda = findOpenComanda(id);
+    if (!comanda) return null;
+    if (canActorAccessComanda(actor, comanda)) return comanda;
+    if (!options.silent) {
+      alert("Voce nao tem permissao para acessar esta comanda.");
+    }
+    return null;
+  }
+
+  function findAnyComandaForActor(id, actor = currentActor(), options = {}) {
+    const comanda = findAnyComanda(id);
+    if (!comanda) return null;
+    if (canActorAccessComanda(actor, comanda)) return comanda;
+    if (!options.silent) {
+      alert("Voce nao tem permissao para acessar esta comanda.");
+    }
+    return null;
+  }
+
+  function isAuditEventVisibleToActor(event, actor = getCurrentUser()) {
+    if (!event) return false;
+    if (!actor || actor.role !== "waiter") return true;
+    const actorId = String(actor.id ?? "").trim();
+    if (String(event.actorId || "") === actorId) return true;
+    const comandaId = String(event.comandaId || "").trim();
+    if (!comandaId) return false;
+    const comanda = findComandaForDetails(comandaId);
+    return canActorAccessComanda(actor, comanda);
+  }
+
+  function listPendingKitchenItems(actor = null) {
+    const sourceComandas = actor ? listOpenComandasForActor(actor) : state.openComandas;
     const rows = [];
-    for (const comanda of state.openComandas) {
+    for (const comanda of sourceComandas) {
       for (const item of comanda.items || []) {
         if (isKitchenOrderActive(item)) {
           rows.push({ comanda, item, remainingMs: kitchenRemainingMs(item) });
@@ -1193,9 +1886,9 @@
     return "waiting";
   }
 
-  function listWaiterReadyItems() {
+  function listWaiterReadyItems(actor = getCurrentUser()) {
     const rows = [];
-    for (const comanda of state.openComandas) {
+    for (const comanda of listOpenComandasForActor(actor)) {
       for (const item of comanda.items || []) {
         if (!itemNeedsKitchen(item) || item.canceled) continue;
         if (!item.kitchenAlertUnread) continue;
@@ -1229,9 +1922,9 @@
     return `${String(row?.comandaId || "")}::${String(row?.itemId || "")}::${String(row?.receivedAt || "")}`;
   }
 
-  function listWaiterKitchenReceipts() {
+  function listWaiterKitchenReceipts(actor = getCurrentUser()) {
     const rows = [];
-    for (const comanda of state.openComandas) {
+    for (const comanda of listOpenComandasForActor(actor)) {
       for (const item of comanda.items || []) {
         if (!itemNeedsKitchen(item) || item.canceled) continue;
         if (!item.kitchenReceivedAt) continue;
@@ -1258,7 +1951,7 @@
       return;
     }
 
-    const rows = listWaiterKitchenReceipts();
+    const rows = listWaiterKitchenReceipts(user);
     const activeKeys = new Set(rows.map((row) => kitchenReceiptKey(row)));
     uiState.waiterKitchenReceiptNotices = (uiState.waiterKitchenReceiptNotices || []).filter((row) => activeKeys.has(kitchenReceiptKey(row)));
     for (const key of Object.keys(uiState.waiterKitchenReceiptSeenMap || {})) {
@@ -1338,7 +2031,7 @@
       return;
     }
 
-    const readyRows = listWaiterReadyItems();
+    const readyRows = listWaiterReadyItems(user);
     const activeKeys = new Set(readyRows.map((row) => waitReadyKey(row)));
     uiState.waiterReadyModalItems = (uiState.waiterReadyModalItems || []).filter((row) =>
       activeKeys.has(waitReadyKey(row))
@@ -2037,14 +2730,8 @@
   }
 
   function buildCashClosureDraft(closedAt = isoNow()) {
-    const rolloverOpen = state.openComandas.map((c) => ({
-      ...c,
-      status: "encerrada-no-fechamento",
-      closedAt
-    }));
-    const commandas = [...state.closedComandas, ...rolloverOpen];
+    const commandas = [...state.closedComandas];
     return {
-      rolloverOpen,
       commandas,
       summary: buildCashSummary(commandas)
     };
@@ -2211,6 +2898,77 @@
     `;
   }
 
+  function createCashHtmlReportRecord(closure, actor, html, options = {}) {
+    const createdAt = isoNow();
+    return normalizeCashHtmlReportRecord(
+      {
+        id: `CHR-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        cashClosureId: closure?.id || "",
+        cashId: closure?.cashId || "",
+        openedAt: closure?.openedAt || "",
+        closedAt: closure?.closedAt || createdAt,
+        createdAt,
+        createdById: actor?.id ?? null,
+        createdByName: actor?.name || "",
+        createdByRole: actor?.role || "",
+        title: options.title || `Fechamento do caixa ${closure?.cashId || "-"}`,
+        subtitle: options.subtitle || "Historico do dia apos fechamento",
+        html: String(html || "")
+      },
+      0
+    );
+  }
+
+  function openCashHtmlReportRecord(report, options = {}) {
+    if (!report || !String(report.html || "").trim()) {
+      alert("HTML de fechamento indisponivel para visualizacao.");
+      return;
+    }
+    const previewTitle = options.previewTitle || report.title || `HTML de fechamento ${report.cashId || ""}`.trim();
+    const previewSubtitle =
+      options.previewSubtitle ||
+      `Salvo em ${formatDateTimeWithDay(report.createdAt || report.closedAt || isoNow())} | Caixa ${report.cashId || "-"}`;
+    openReceiptPopup(report.html, "Permita pop-up para abrir o HTML salvo do fechamento.", "width=980,height=860", {
+      previewTitle,
+      previewSubtitle
+    });
+  }
+
+  function openStoredCashHtmlReport(reportId) {
+    const report = (state.cashHtmlReports || []).find((entry) => String(entry.id) === String(reportId));
+    if (!report) {
+      alert("Arquivo HTML de fechamento nao encontrado.");
+      return;
+    }
+    openCashHtmlReportRecord(report, {
+      previewTitle: report.title || `Fechamento ${report.cashId || report.cashClosureId || "-"}`,
+      previewSubtitle: `Arquivo salvo em ${formatDateTimeWithDay(report.createdAt || report.closedAt || isoNow())}`
+    });
+  }
+
+  function ensureLatestCashClosureHtmlReport() {
+    const closures = Array.isArray(state.history90) ? state.history90 : [];
+    if (!closures.length) return false;
+    const latestClosure = [...closures].sort((a, b) => new Date(b?.closedAt || b?.createdAt || 0) - new Date(a?.closedAt || a?.createdAt || 0))[0];
+    if (!latestClosure) return false;
+    const hasReport = (state.cashHtmlReports || []).some(
+      (entry) => String(entry?.cashClosureId || "").trim() === String(latestClosure?.id || "").trim()
+    );
+    if (hasReport) return false;
+
+    const reportOptions = {
+      printedBy: { id: 0, role: "system", name: "Sistema" },
+      title: `Fechamento do caixa ${latestClosure.cashId || latestClosure.id || "-"}`,
+      subtitle: "HTML restaurado automaticamente do ultimo fechamento"
+    };
+    const html = buildCashHistoryPrintHtml(latestClosure, reportOptions);
+    const report = createCashHtmlReportRecord(latestClosure, reportOptions.printedBy, html, reportOptions);
+    state.cashHtmlReports = [report, ...(state.cashHtmlReports || [])];
+    pruneCashHtmlReports(state);
+    saveState();
+    return true;
+  }
+
   function printCashHistoryReport(closure, options = {}) {
     if (!closure) {
       alert("Historico nao encontrado para impressao.");
@@ -2277,6 +3035,10 @@
     const comanda = findComandaForDetails(uiState.comandaDetailsId);
     if (!comanda) return "";
     const viewer = getCurrentUser();
+    if (!canActorAccessComanda(viewer, comanda)) {
+      uiState.comandaDetailsId = null;
+      return "";
+    }
     const openEvent = (comanda.events || []).find((event) => event.type === "comanda_aberta");
     const creatorUser = state.users.find((u) => String(u.id) === String(comanda.createdBy));
     const creatorName = resolveComandaResponsibleName(comanda);
@@ -2387,24 +3149,109 @@
     `;
   }
 
+  function dedupeComandasById(commandas) {
+    const map = new Map();
+    for (const comanda of Array.isArray(commandas) ? commandas : []) {
+      const id = String(comanda?.id || "").trim();
+      if (!id) continue;
+      const current = map.get(id);
+      if (!current) {
+        map.set(id, comanda);
+        continue;
+      }
+      const incomingUpdated = new Date(comandaUpdatedAt(comanda) || 0).getTime();
+      const currentUpdated = new Date(comandaUpdatedAt(current) || 0).getTime();
+      if (incomingUpdated >= currentUpdated) {
+        map.set(id, comanda);
+      }
+    }
+    return [...map.values()];
+  }
+
+  function dedupeAuditEvents(events) {
+    const map = new Map();
+    for (const event of Array.isArray(events) ? events : []) {
+      if (!event || typeof event !== "object") continue;
+      const key = String(event.id || `${event.ts || ""}|${event.actorId || ""}|${event.type || ""}|${event.comandaId || ""}|${event.detail || ""}`);
+      if (!map.has(key)) {
+        map.set(key, event);
+      }
+    }
+    return [...map.values()];
+  }
+
+  function summarizeRealtimeAction(event) {
+    if (!event) return "-";
+    const type = String(event.type || "");
+    if (type === "comanda_aberta") return "Comanda aberta";
+    if (type === "comanda_finalizada") return "Comanda finalizada";
+    if (type === "item_add") return "Item adicionado";
+    if (type === "item_cancelado") return "Item cancelado";
+    if (type === "item_reduzido") return "Item reduzido";
+    if (type === "cozinha_status") return "Atualizacao da cozinha";
+    if (type === "cozinha_recebido") return "Cozinha recebeu pedidos";
+    if (type === "garcom_ciente_alerta") return "Garcom leu alerta";
+    if (type === "funcionario_add") return "Funcionario criado";
+    if (type === "funcionario_edit") return "Funcionario alterado";
+    if (type === "funcionario_delete") return "Funcionario removido";
+    if (type === "produto_add") return "Produto criado";
+    if (type === "produto_edit") return "Produto alterado";
+    if (type === "produto_delete") return "Produto removido";
+    if (type === "caixa_fechado") return "Caixa fechado";
+    if (type === "caixa_novo") return "Novo caixa aberto";
+    return eventTypeLabel(type);
+  }
+
+  function renderAdminRealtimeSimplePanel(events = []) {
+    const rows = events.slice(0, 60);
+    return `
+      <div class="card">
+        <h3>Alteracoes em tempo real</h3>
+        <p class="note">Leitura simplificada para computador e celular.</p>
+        ${rows.length
+          ? `<div class="table-wrap" style="margin-top:0.7rem;"><table class="responsive-stack history-table"><thead><tr><th>Quando</th><th>Quem</th><th>Acao</th><th>Comanda</th><th>Resumo</th></tr></thead><tbody>${rows
+              .map(
+                (event) =>
+                  `<tr><td data-label="Quando">${formatDateTime(event.ts || event.broadcastAt)}</td><td data-label="Quem">${esc(event.actorName || "-")} (${esc(roleLabel(event.actorRole || "-"))})</td><td data-label="Acao">${esc(summarizeRealtimeAction(event))}</td><td data-label="Comanda">${esc(event.comandaId || "-")}</td><td data-label="Resumo">${esc(event.detail || "-")}</td></tr>`
+              )
+              .join("")}</tbody></table></div>`
+          : `<div class="empty" style="margin-top:0.75rem;">Sem alteracoes recentes.</div>`}
+      </div>
+    `;
+  }
+
   function renderAdminHistory() {
-    const currentAudit = state.auditLog.slice(0, 250);
+    const currentAudit = state.auditLog.slice(0, 5000);
     const closures = state.history90;
+    const closureAudit = closures.flatMap((closure) => (Array.isArray(closure.auditLog) ? closure.auditLog : []));
+    const mergedAudit = dedupeAuditEvents([...currentAudit, ...closureAudit]).sort((a, b) => new Date(b.ts || 0) - new Date(a.ts || 0));
+    const displayedAudit = mergedAudit.slice(0, 1800);
     const closureComandas = closures.flatMap((closure) => closure.commandas || []);
-    const compactHistoryComandas = [...state.closedComandas, ...closureComandas].sort(
+    const openComandas = dedupeComandasById(state.openComandas).sort((a, b) => new Date(comandaUpdatedAt(b) || 0) - new Date(comandaUpdatedAt(a) || 0));
+    const closedCurrentComandas = dedupeComandasById(state.closedComandas).sort((a, b) => new Date(comandaUpdatedAt(b) || 0) - new Date(comandaUpdatedAt(a) || 0));
+    const archivedComandas = dedupeComandasById(closureComandas).sort((a, b) => new Date(comandaUpdatedAt(b) || 0) - new Date(comandaUpdatedAt(a) || 0));
+    const compactHistoryComandas = dedupeComandasById([...openComandas, ...closedCurrentComandas, ...archivedComandas]).sort(
       (a, b) => new Date(comandaUpdatedAt(b) || 0) - new Date(comandaUpdatedAt(a) || 0)
     );
     const auditDetailsKey = detailKey("admin-history", "audit-day");
+    const openCount = openComandas.length;
+    const closedCount = closedCurrentComandas.length;
+    const archivedCount = compactHistoryComandas.length;
+    const realtimeFeed = dedupeAuditEvents([...uiState.remoteMonitorEvents, ...displayedAudit]).sort(
+      (a, b) => new Date(b.ts || b.broadcastAt || 0) - new Date(a.ts || a.broadcastAt || 0)
+    );
 
     return `
+      ${renderAdminRealtimeSimplePanel(realtimeFeed)}
       <div class="grid cols-2">
         <div class="card">
-          <h3>Historico Imutavel (Dia Atual)</h3>
-          <p class="note">Alteracoes de funcionarios e admin registradas para conferencia.</p>
+          <h3>Historico Imutavel (Atual + Fechamentos)</h3>
+          <p class="note">Eventos do caixa atual + eventos preservados nos fechamentos de caixa.</p>
+          <p class="note" style="margin-top:0.25rem;">Comandas abertas agora: <b>${openCount}</b> | Comandas fechadas no caixa atual: <b>${closedCount}</b> | Total de comandas no historico minimizado: <b>${archivedCount}</b></p>
           <details class="compact-details" data-persist-key="${esc(auditDetailsKey)}" style="margin-top:0.75rem;"${detailOpenAttr(auditDetailsKey)}>
-            <summary>Ver alteracoes do dia (${currentAudit.length})</summary>
-            ${currentAudit.length
-              ? `<div class="table-wrap" style="margin-top:0.55rem;"><table class="history-table"><thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th><th>Abrir</th></tr></thead><tbody>${currentAudit
+            <summary>Ver alteracoes (${displayedAudit.length})</summary>
+            ${displayedAudit.length
+              ? `<div class="table-wrap" style="margin-top:0.55rem;"><table class="history-table"><thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th><th>Abrir</th></tr></thead><tbody>${displayedAudit
                   .map(
                     (e) =>
                       `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName)} (${esc(e.actorRole)})</td><td>${renderEventTypeTag(e.type)}</td><td>${esc(e.comandaId || "-")}</td><td>${esc(e.detail)}</td><td>${
@@ -2416,9 +3263,28 @@
           </details>
           ${renderComandaDetailsBox()}
         </div>
+        ${renderComandaRecordsCompact(openComandas, {
+          title: "Comandas abertas (caixa atual)",
+          limit: 500,
+          keyPrefix: "admin-history-comandas-open"
+        })}
+      </div>
+      <div class="grid cols-2" style="margin-top:0.75rem;">
+        ${renderComandaRecordsCompact(closedCurrentComandas, {
+          title: "Comandas fechadas (caixa atual)",
+          limit: 500,
+          keyPrefix: "admin-history-comandas-closed-current"
+        })}
+        ${renderComandaRecordsCompact(archivedComandas, {
+          title: "Comandas de fechamentos anteriores",
+          limit: 1200,
+          keyPrefix: "admin-history-comandas-archived"
+        })}
+      </div>
+      <div style="margin-top:0.75rem;">
         ${renderComandaRecordsCompact(compactHistoryComandas, {
-          title: "Comandas no Historico (minimizadas)",
-          limit: 220,
+          title: "Visao geral de todas as comandas",
+          limit: 1500,
           keyPrefix: "admin-history-comandas"
         })}
       </div>
@@ -2455,12 +3321,23 @@
 
   function renderAdminCash() {
     const openInfo = `Caixa ${state.cash.id} aberto em ${formatDateTimeWithDay(state.cash.openedAt)}`;
+    const pendingOpen = [...state.openComandas].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+    const hasPendingOpen = pendingOpen.length > 0;
+    const pendingPreview = pendingOpen
+      .slice(0, 8)
+      .map((comanda) => `${comanda.id} (${comanda.table || "-"})`)
+      .join(" | ");
     return `
       <div class="grid cols-2">
         <div class="card">
           <h3>Fechar Caixa</h3>
           <p class="note">Solicita segunda autenticacao para evitar fechamento por engano.</p>
           <p class="note" style="margin-top:0.35rem;">${esc(openInfo)}</p>
+          ${
+            hasPendingOpen
+              ? `<div class="note" style="margin-top:0.45rem;color:#8b2f3b;"><b>Bloqueado:</b> existe(m) ${pendingOpen.length} comanda(s) aberta(s). Feche todas antes de encerrar o caixa.${pendingPreview ? ` Ex.: ${esc(pendingPreview)}${pendingOpen.length > 8 ? " ..." : ""}` : ""}</div>`
+              : `<div class="note" style="margin-top:0.45rem;color:#1e5f3a;">Todas as comandas estao fechadas. Caixa liberado para encerramento.</div>`
+          }
           <form id="close-cash-form" class="form" style="margin-top:0.75rem;" autocomplete="off">
             <div class="field">
               <label>Login admin (2a confirmacao)</label>
@@ -2470,23 +3347,47 @@
               <label>Senha admin</label>
               <input name="password" type="password" required placeholder="senha do admin" />
             </div>
-            <button type="submit" class="btn danger">Fechar Caixa Agora</button>
+            <button type="submit" class="btn danger" ${hasPendingOpen ? "disabled title=\"Feche todas as comandas abertas para continuar.\"" : ""}>Fechar Caixa Agora</button>
           </form>
           <div class="actions" style="margin-top:0.75rem;">
             <button type="button" class="btn secondary" data-action="print-cash-day-history">Ver historico do dia</button>
+            <button type="button" class="btn secondary" data-action="set-tab" data-role="admin" data-tab="arquivos_html">Arquivos HTML salvos</button>
           </div>
-          <p class="note" style="margin-top:0.35rem;">Relatorio simples: resumo do caixa, pagamentos e comandas do dia.</p>
+          <p class="note" style="margin-top:0.35rem;">Relatorio simples: resumo do caixa, pagamentos e comandas do dia. No fechamento, o HTML do relatorio e arquivado automaticamente.</p>
         </div>
         <div class="card">
           <h3>Regras aplicadas no fechamento</h3>
           <ul>
-            <li>Todas as comandas do dia vao para historico de 90 dias.</li>
+            <li>Fechamento so ocorre quando nao ha comandas abertas.</li>
+            <li>Todas as comandas finalizadas do caixa vao para historico de 90 dias.</li>
             <li>Historico detalhado de eventos e cada comanda e preservado.</li>
             <li>Dados operacionais do dia sao limpos (comandas e log atual).</li>
             <li>Estoque permanece para o proximo dia.</li>
-            <li>Relatorio do fechamento e aberto para impressao.</li>
+            <li>Relatorio do fechamento e aberto para visualizacao e salvo como HTML no sistema/supabase.</li>
           </ul>
         </div>
+      </div>
+    `;
+  }
+
+  function renderAdminCashHtmlArchive() {
+    ensureLatestCashClosureHtmlReport();
+    const reports = (state.cashHtmlReports || [])
+      .map((entry, idx) => normalizeCashHtmlReportRecord(entry, idx))
+      .sort((a, b) => new Date(b.closedAt || b.createdAt || 0) - new Date(a.closedAt || a.createdAt || 0));
+
+    return `
+      <div class="card">
+        <h3>Arquivos HTML de Fechamento</h3>
+        <p class="note">Cada fechamento de caixa gera um HTML igual ao relatorio que iria para impressao. Esses arquivos ficam salvos no sistema e sincronizados via Supabase.</p>
+        ${reports.length
+          ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="history-table"><thead><tr><th>Arquivo</th><th>Dia referencia</th><th>Caixa</th><th>Fechado em</th><th>Salvo em</th><th>Responsavel</th><th>Acoes</th></tr></thead><tbody>${reports
+              .map(
+                (report) =>
+                  `<tr><td>${esc(report.id)}</td><td>${esc(formatDate(report.closedAt || report.createdAt || isoNow()))}</td><td>${esc(report.cashId || "-")}</td><td>${esc(formatDateTimeWithDay(report.closedAt || report.createdAt))}</td><td>${esc(formatDateTimeWithDay(report.createdAt || report.closedAt))}</td><td>${esc(report.createdByName || "-")} (${esc(roleLabel(report.createdByRole || "-"))})</td><td><button class="btn secondary" data-action="open-cash-html-report" data-id="${esc(report.id)}">Abrir em nova aba</button></td></tr>`
+              )
+              .join("")}</tbody></table></div>`
+          : `<div class="empty" style="margin-top:0.75rem;">Nenhum HTML de fechamento salvo ainda.</div>`}
       </div>
     `;
   }
@@ -2577,7 +3478,6 @@
             </div>
             <div class="actions" style="margin-top:0.45rem;">
               <button class="btn secondary compact-action" data-action="save-kitchen-printer-config" ${printPipelineEnabled ? "" : "disabled"}>Salvar impressora</button>
-              <button class="btn secondary compact-action" data-action="test-kitchen-printer">Visualizar teste</button>
             </div>
             <p class="note" style="margin-top:0.35rem;">Status QZ Tray: <b>${printPipelineEnabled ? (qzAvailable ? "detectado no navegador" : "nao detectado (instale e abra o QZ Tray)") : "ignorado no modo previa"}</b></p>
             <p class="note">${printPipelineEnabled ? "Se o campo da impressora ficar vazio, o sistema usa a impressora padrao do computador da cozinha." : "Para reativar impressao fisica depois, altere PRINT_PIPELINE_ENABLED para true no app.js."}</p>
@@ -2763,7 +3663,8 @@
       { key: "apagar", label: "A Pagar" },
       { key: "financeiro", label: "Financas" },
       { key: "historico", label: "Historico" },
-      { key: "caixa", label: "Fechar Caixa" }
+      { key: "caixa", label: "Fechar Caixa" },
+      { key: "arquivos_html", label: "Arquivos HTML" }
     ];
 
     let content = "";
@@ -2798,6 +3699,9 @@
       case "caixa":
         content = renderAdminCash();
         break;
+      case "arquivos_html":
+        content = renderAdminCashHtmlArchive();
+        break;
       default:
         content = renderAdminDashboard();
     }
@@ -2828,10 +3732,16 @@
   }
 
   function renderWaiterCreateComanda() {
-    const activeComanda = uiState.waiterActiveComandaId ? findOpenComanda(uiState.waiterActiveComandaId) : null;
+    const actor = currentActor();
+    const visibleOpenComandas = listOpenComandasForActor(actor);
+    const activeComanda = uiState.waiterActiveComandaId
+      ? visibleOpenComandas.find((comanda) => String(comanda.id) === String(uiState.waiterActiveComandaId)) || null
+      : null;
     if (uiState.waiterActiveComandaId && !activeComanda) {
       uiState.waiterActiveComandaId = null;
     }
+    const visibleQueue = listPendingKitchenItems(actor);
+    const visibleClosedToday = actor?.role === "waiter" ? state.closedComandas.filter((comanda) => canActorAccessComanda(actor, comanda)) : state.closedComandas;
 
     return `
       <div class="grid cols-2">
@@ -2864,9 +3774,9 @@
             : `<div class="card">
           <h3>Resumo rapido</h3>
           <div class="kpis" style="margin-top:0.75rem;">
-            <div class="kpi"><p>Abertas</p><b>${state.openComandas.length}</b></div>
-            <div class="kpi"><p>Fila Cozinha</p><b>${listPendingKitchenItems().length}</b></div>
-            <div class="kpi"><p>Fechadas hoje</p><b>${state.closedComandas.length}</b></div>
+            <div class="kpi"><p>Abertas</p><b>${visibleOpenComandas.length}</b></div>
+            <div class="kpi"><p>Fila Cozinha</p><b>${visibleQueue.length}</b></div>
+            <div class="kpi"><p>Fechadas hoje</p><b>${visibleClosedToday.length}</b></div>
           </div>
         </div>`
         }
@@ -2999,7 +3909,7 @@
           <input name="fiadoCustomer" placeholder="Nome completo" />
         </div>
         <div class="field" data-role="pix-box" style="display:none;">
-          <label>QR Pix (teste aleatorio)</label>
+          <label>QR Pix (gerado automaticamente)</label>
           <div class="card" style="display:grid; place-items:center; gap:0.5rem;">
             <canvas data-role="pix-canvas"></canvas>
             <div class="note" data-role="pix-code"></div>
@@ -3143,11 +4053,14 @@
   }
 
   function renderWaiterOpenComandas() {
-    if (!state.openComandas.length) {
+    const actor = currentActor();
+    const isWaiterActor = actor?.role === "waiter";
+    const visibleOpenComandas = listOpenComandasForActor(actor);
+    if (!visibleOpenComandas.length) {
       return `<div class="empty">Nenhuma comanda aberta no momento.</div>`;
     }
 
-    const sorted = [...state.openComandas].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+    const sorted = [...visibleOpenComandas].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
     const filtered = sorted.filter((c) => matchesComandaSearch(c, uiState.waiterComandaSearch));
     let newCount = 0;
     let readyCount = 0;
@@ -3165,7 +4078,7 @@
           <label>Busca por comanda (mesa/referencia/cliente/codigo)</label>
           <input data-role="waiter-search" value="${esc(uiState.waiterComandaSearch)}" placeholder="Ex: Mesa 7, CMD-0001, Joao" />
         </div>
-        <p class="note" style="margin-top:0.5rem;">No menu de comandas abertas, todas ficam minimizadas para leitura rapida. Destaques: amarelo (pedido novo) e verde (pronto para entrega).</p>
+        <p class="note" style="margin-top:0.5rem;">No menu de comandas abertas, ${isWaiterActor ? "ficam visiveis apenas as comandas sob responsabilidade do usuario logado." : "todas as comandas ficam disponiveis neste modo."} Destaques: amarelo (pedido novo) e verde (pronto para entrega).</p>
         <div class="kpis" style="margin-top:0.65rem;">
           <div class="kpi"><p>Comandas filtradas</p><b>${filtered.length}</b></div>
           <div class="kpi"><p>Pedidos novos</p><b>${newCount}</b></div>
@@ -3203,7 +4116,7 @@
   }
 
   function renderWaiterKitchen() {
-    const queue = listPendingKitchenItems();
+    const queue = listPendingKitchenItems(currentActor());
     const avg = queue.length ? Math.ceil(queue.reduce((s, r) => s + r.remainingMs, 0) / queue.length / 60000) : 0;
 
     return `
@@ -3288,15 +4201,24 @@
   }
 
   function renderWaiterHistory() {
-    const todayAudit = state.auditLog.slice(0, 250);
-    const closed = allFinalizedComandasForFinance().sort((a, b) => new Date(b.closedAt || 0) - new Date(a.closedAt || 0)).slice(0, 150);
+    const actor = currentActor();
+    const dayOpen = listOpenComandasForActor(actor);
+    const dayClosed = listFinalizedComandasForActor(actor);
+    const dayComandaIds = new Set([...dayOpen, ...dayClosed].map((comanda) => String(comanda?.id || "").trim()).filter(Boolean));
+    const todayAudit = state.auditLog
+      .filter((entry) => isAuditEventVisibleToActor(entry, actor))
+      .filter((entry) => dayComandaIds.has(String(entry?.comandaId || "").trim()))
+      .slice(0, 250);
+    const closed = listFinalizedComandasForActor(actor)
+      .sort((a, b) => new Date(b.closedAt || 0) - new Date(a.closedAt || 0))
+      .slice(0, 150);
     const waiterHistoryDetailsKey = detailKey("waiter-history", "audit");
 
     return `
       <div class="grid cols-2">
         <div class="card">
           <h3>Historico de Alteracoes (imutavel)</h3>
-          <p class="note" style="margin-top:0.35rem;">Tipos de evento estao traduzidos para facilitar leitura rapida.</p>
+          <p class="note" style="margin-top:0.35rem;">Mostra apenas alteracoes das comandas abertas/fechadas no caixa atual.</p>
           <details class="compact-details" data-persist-key="${esc(waiterHistoryDetailsKey)}" style="margin-top:0.75rem;"${detailOpenAttr(waiterHistoryDetailsKey)}>
             <summary>Ver alteracoes (${todayAudit.length})</summary>
             ${todayAudit.length
@@ -3309,7 +4231,7 @@
           </details>
         </div>
         ${renderComandaRecordsCompact(closed, {
-          title: "Comandas Finalizadas (minimizadas)",
+          title: "Comandas Finalizadas do caixa atual (minimizadas)",
           limit: 150,
           keyPrefix: "waiter-history-comandas"
         })}
@@ -3855,7 +4777,7 @@
       alert("Somente garcom ou administrador podem resolver alertas.");
       return;
     }
-    const comanda = findOpenComanda(comandaId);
+    const comanda = findOpenComandaForActor(comandaId, actor);
     if (!comanda) return;
 
     let resolvedCount = 0;
@@ -4112,8 +5034,9 @@
   }
 
   function queueComandaDraftItem(form) {
+    const actor = currentActor();
     const comandaId = form.dataset.comandaId;
-    const comanda = findOpenComanda(comandaId);
+    const comanda = findOpenComandaForActor(comandaId, actor, { silent: true });
     if (!comanda) {
       alert("Comanda nao encontrada.");
       return;
@@ -4140,6 +5063,12 @@
   }
 
   function removeComandaDraftItem(comandaId, index) {
+    const comanda = findOpenComandaForActor(comandaId, currentActor(), { silent: true });
+    if (!comanda) {
+      clearWaiterDraftItems(comandaId);
+      render();
+      return;
+    }
     const items = getWaiterDraftItems(comandaId);
     const idx = Number(index);
     if (!Number.isInteger(idx) || idx < 0 || idx >= items.length) return;
@@ -4150,17 +5079,18 @@
     render();
   }
 
-  function listComandaSelectableItems(comandaId) {
-    const comanda = findOpenComanda(comandaId);
+  function listComandaSelectableItems(comandaId, actor = currentActor()) {
+    const comanda = findOpenComandaForActor(comandaId, actor, { silent: true });
     if (!comanda) return [];
     return (comanda.items || []).filter((item) => !item.canceled && Number(item.qty || 0) > 0);
   }
 
   function openComandaItemSelector(comandaId, mode = "increment") {
-    const comanda = findOpenComanda(comandaId);
+    const actor = currentActor();
+    const comanda = findOpenComandaForActor(comandaId, actor);
     if (!comanda) return;
     const allowedMode = mode === "cancel" ? "cancel" : "increment";
-    const candidates = listComandaSelectableItems(comandaId);
+    const candidates = listComandaSelectableItems(comandaId, actor);
     if (!candidates.length) {
       alert("Nao ha itens validos nessa comanda.");
       return;
@@ -4185,11 +5115,11 @@
   function renderComandaItemSelectorModal() {
     const selector = uiState.itemSelector || {};
     if (!selector.open || !selector.comandaId) return "";
-    const comanda = findOpenComanda(selector.comandaId);
+    const comanda = findOpenComandaForActor(selector.comandaId, currentActor(), { silent: true });
     if (!comanda) return "";
 
     const mode = selector.mode === "cancel" ? "cancel" : "increment";
-    const candidates = listComandaSelectableItems(comanda.id);
+    const candidates = listComandaSelectableItems(comanda.id, currentActor());
     if (!candidates.length) return "";
 
     return `
@@ -4819,7 +5749,7 @@
   function addItemToComanda(form) {
     const actor = currentActor();
     const comandaId = form.dataset.comandaId;
-    const comanda = findOpenComanda(comandaId);
+    const comanda = findOpenComandaForActor(comandaId, actor, { silent: true });
     if (!comanda) {
       alert("Comanda nao encontrada.");
       return;
@@ -4869,7 +5799,7 @@
 
   function incrementItem(comandaId, itemId, amount = 1) {
     const actor = currentActor();
-    const comanda = findOpenComanda(comandaId);
+    const comanda = findOpenComandaForActor(comandaId, actor);
     if (!comanda) return;
 
     const item = (comanda.items || []).find((i) => i.id === itemId);
@@ -5053,7 +5983,7 @@
 
   function deliverItem(comandaId, itemId) {
     const actor = currentActor();
-    const comanda = findOpenComanda(comandaId);
+    const comanda = findOpenComandaForActor(comandaId, actor);
     if (!comanda) return;
 
     const item = (comanda.items || []).find((i) => i.id === itemId);
@@ -5081,7 +6011,7 @@
 
   function cancelItem(comandaId, itemId, options = {}) {
     const actor = currentActor();
-    const comanda = findOpenComanda(comandaId);
+    const comanda = findOpenComandaForActor(comandaId, actor);
     if (!comanda) return;
 
     const item = (comanda.items || []).find((i) => i.id === itemId);
@@ -5150,7 +6080,7 @@
 
   function addComandaNote(comandaId) {
     const actor = currentActor();
-    const comanda = findOpenComanda(comandaId);
+    const comanda = findOpenComandaForActor(comandaId, actor);
     if (!comanda) return;
 
     const note = prompt("Digite a observacao da comanda:", "");
@@ -5171,7 +6101,12 @@
 
   function toggleFinalize(comandaId) {
     uiState.finalizeOpenByComanda[comandaId] = !uiState.finalizeOpenByComanda[comandaId];
-    const comanda = findOpenComanda(comandaId);
+    const comanda = findOpenComandaForActor(comandaId, currentActor(), { silent: true });
+    if (!comanda) {
+      delete uiState.finalizeOpenByComanda[comandaId];
+      render();
+      return;
+    }
     if (uiState.finalizeOpenByComanda[comandaId] && comanda && !comanda.pixCodeDraft) {
       comanda.pixCodeDraft = generatePixCode();
       saveState();
@@ -5182,7 +6117,7 @@
   function finalizeComanda(form) {
     const actor = currentActor();
     const comandaId = form.dataset.comandaId;
-    const comanda = findOpenComanda(comandaId);
+    const comanda = findOpenComandaForActor(comandaId, actor, { silent: true });
     if (!comanda) {
       alert("Comanda nao encontrada.");
       return;
@@ -5434,31 +6369,6 @@
     render();
   }
 
-  function printKitchenTestTicket() {
-    const actor = currentActor();
-    if (!isAdminOrDev(actor)) {
-      alert("Somente administrador pode testar a impressora da cozinha.");
-      return;
-    }
-    const mockComanda = {
-      id: "TESTE-COZINHA",
-      table: "Balcao",
-      customer: "Teste"
-    };
-    const mockItem = {
-      id: "IT-TESTE",
-      name: "Cupom de teste",
-      qty: 1,
-      category: "Cozinha",
-      needsKitchen: true,
-      kitchenPriority: "normal",
-      waiterNote: "Teste de impressao",
-      deliveryRequested: false,
-      canceled: false
-    };
-    printKitchenTicket(mockComanda, [mockItem], actor, { reason: "Teste de impressora" });
-  }
-
   function printKitchenTicket(comanda, items, actor, options = {}) {
     if (!comanda || !Array.isArray(items) || !items.length) return;
     if (!actor || (actor.role !== "waiter" && !isAdminOrDev(actor))) return;
@@ -5525,7 +6435,7 @@
   }
 
   function printComanda(comandaId) {
-    const comanda = findAnyComanda(comandaId);
+    const comanda = findAnyComandaForActor(comandaId, currentActor());
     if (!comanda) return;
 
     const lines = (comanda.items || [])
@@ -5582,6 +6492,21 @@
       return;
     }
 
+    const pendingOpen = [...state.openComandas].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+    if (pendingOpen.length) {
+      const preview = pendingOpen
+        .slice(0, 8)
+        .map((comanda) => `${comanda.id} (${comanda.table || "-"})`)
+        .join(" | ");
+      alert(
+        `Nao e possivel fechar o caixa com comandas abertas.\n\n` +
+          `Comandas pendentes: ${pendingOpen.length}\n` +
+          `${preview ? `Ex.: ${preview}${pendingOpen.length > 8 ? " ..." : ""}\n\n` : ""}` +
+          "Finalize todas as comandas e tente novamente."
+      );
+      return;
+    }
+
     const openedAt = state.cash.openedAt;
     const closedAt = isoNow();
     const confirmText =
@@ -5617,9 +6542,18 @@
       ],
       summary: closureDraft.summary
     };
+    const reportOptions = {
+      printedBy: actor,
+      title: `Fechamento do caixa ${closure.cashId}`,
+      subtitle: "Historico do dia apos fechamento"
+    };
+    const closureHtml = buildCashHistoryPrintHtml(closure, reportOptions);
+    const archivedHtmlReport = createCashHtmlReportRecord(closure, actor, closureHtml, reportOptions);
 
     state.history90.unshift(closure);
     pruneHistory(state);
+    state.cashHtmlReports = [archivedHtmlReport, ...(state.cashHtmlReports || [])];
+    pruneCashHtmlReports(state);
 
     state.openComandas = [];
     state.closedComandas = [];
@@ -5634,10 +6568,9 @@
     appendAudit({ actor, type: "caixa_novo", detail: `Novo caixa ${state.cash.id} iniciado.` });
 
     saveState();
-    printCashHistoryReport(closure, {
-      printedBy: actor,
-      title: `Fechamento do caixa ${closure.cashId}`,
-      subtitle: "Historico do dia apos fechamento"
+    openCashHtmlReportRecord(archivedHtmlReport, {
+      previewTitle: reportOptions.title,
+      previewSubtitle: `${reportOptions.subtitle} | Arquivo ${archivedHtmlReport.id}`
     });
     alert(`Caixa fechado com sucesso.\nAbertura: ${formatDateTimeWithDay(openedAt)}\nFechamento: ${formatDateTimeWithDay(closedAt)}\nHistorico mantido por 90 dias.`);
     render();
@@ -5808,6 +6741,11 @@
       return;
     }
 
+    if (action === "open-cash-html-report") {
+      openStoredCashHtmlReport(button.dataset.id);
+      return;
+    }
+
     if (action === "receive-payable") {
       receivePayable(button.dataset.id);
       return;
@@ -5815,11 +6753,6 @@
 
     if (action === "save-kitchen-printer-config") {
       saveKitchenPrinterConfigFromUi();
-      return;
-    }
-
-    if (action === "test-kitchen-printer") {
-      printKitchenTestTicket();
       return;
     }
 
@@ -6157,7 +7090,13 @@
     if (user?.role === "cook" && uiState.cookTab === "ativos") {
       render();
     }
-    if (user?.role === "admin" && (uiState.adminTab === "monitor" || (uiState.adminTab === "comandas" && uiState.waiterTab === "cozinha"))) {
+    if (
+      user?.role === "admin" &&
+      (uiState.adminTab === "monitor" ||
+        uiState.adminTab === "historico" ||
+        uiState.adminTab === "arquivos_html" ||
+        (uiState.adminTab === "comandas" && uiState.waiterTab === "cozinha"))
+    ) {
       render();
     }
     if (user?.role === "dev" && (uiState.devTab === "monitor" || uiState.devTab === "devices")) {

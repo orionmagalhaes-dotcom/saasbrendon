@@ -1298,6 +1298,64 @@ th {
   .kitchen-priority-actions {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .monitor-table thead,
+  .responsive-stack thead {
+    display: none;
+  }
+
+  .monitor-table,
+  .monitor-table tbody,
+  .monitor-table tr,
+  .monitor-table td,
+  .responsive-stack,
+  .responsive-stack tbody,
+  .responsive-stack tr,
+  .responsive-stack td {
+    display: block;
+    width: 100%;
+  }
+
+  .monitor-table tr,
+  .responsive-stack tr {
+    border-bottom: 1px solid #23304a;
+    padding: 0.45rem 0;
+  }
+
+  .monitor-table td,
+  .responsive-stack td {
+    border: none;
+    padding: 0.2rem 0;
+    font-size: 0.9rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .monitor-table td::before,
+  .responsive-stack td::before {
+    content: attr(data-label);
+    font-size: 0.74rem;
+    color: #86a2cb;
+    font-weight: 700;
+    flex: 0 0 42%;
+  }
+
+  .monitor-table td[data-label="Acoes"],
+  .responsive-stack td[data-label="Acoes"] {
+    justify-content: flex-end;
+  }
+
+  .monitor-table td[data-label="Acoes"]::before,
+  .responsive-stack td[data-label="Acoes"]::before {
+    display: none;
+  }
+
+  .responsive-stack td[data-label="Acoes"] .actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
 }
 
 @media (max-width: 640px) {
