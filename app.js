@@ -2415,7 +2415,6 @@
   function renderAdminDashboard() {
     const open = state.openComandas.length;
     const closed = state.closedComandas.length;
-    const pendingFiado = state.payables.filter((p) => p.status === "pendente");
     const grossToday = state.closedComandas.reduce((sum, c) => sum + comandaTotal(c), 0);
 
     return `
@@ -2424,7 +2423,6 @@
           <div class="kpi"><p>Comandas Abertas</p><b>${open}</b></div>
           <div class="kpi"><p>Comandas Finalizadas Hoje</p><b>${closed}</b></div>
           <div class="kpi"><p>Total Vendido Hoje</p><b>${money(grossToday)}</b></div>
-          <div class="kpi"><p>Fiado Pendente</p><b>${pendingFiado.length} (${money(pendingFiado.reduce((a, b) => a + b.total, 0))})</b></div>
         </div>
         <div class="card">
           <h3>Atalhos</h3>
