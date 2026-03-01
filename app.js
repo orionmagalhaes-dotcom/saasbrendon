@@ -69,7 +69,7 @@
 
   const app = document.getElementById("app");
   const uiState = {
-    adminTab: "monitor",
+    adminTab: "dashboard",
     devTab: "monitor",
     waiterTab: "abrir",
     cookTab: "ativos",
@@ -4670,7 +4670,21 @@
           <div class="kpi"><p>Prontos para entrega</p><b>${readyCount}</b></div>
         </div>
       </div>
-      ${filtered.length ? `<div class="comanda-grid" style="margin-top:1rem;">${filtered.map((c) => renderComandaCard(c, { forceCollapsed: true })).join("")}</div>` : `<div class="empty" style="margin-top:1rem;">Nenhuma comanda encontrada para a busca.</div>`}
+      ${filtered.length ? (() => {
+        if (!isWaiterActor && actor?.role === "admin") {
+          const grouped = {};
+          for (const c of filtered) {
+            const creator = resolveComandaResponsibleName(c);
+            if (!grouped[creator]) grouped[creator] = [];
+            grouped[creator].push(c);
+          }
+          return Object.keys(grouped).sort().map(creator => `
+            <h4 style="margin-top:1.5rem; margin-bottom:0.5rem; border-bottom:1px solid var(--border); padding-bottom:0.25rem;">Garçom: ${esc(creator)} <span class="tag">${grouped[creator].length}</span></h4>
+            <div class="comanda-grid" style="margin-top:0.5rem;">${grouped[creator].map(c => renderComandaCard(c, { forceCollapsed: true })).join("")}</div>
+          `).join("");
+        }
+        return `<div class="comanda-grid" style="margin-top:1rem;">${filtered.map(c => renderComandaCard(c, { forceCollapsed: true })).join("")}</div>`;
+      })() : `<div class="empty" style="margin-top:1rem;">Nenhuma comanda encontrada para a busca.</div>`}
     `;
   }
 
