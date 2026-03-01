@@ -508,6 +508,46 @@
     return merged.slice(0, 5000);
   }
 
+  function sanitizeDeletedUserIds(deletedIds, ...states) {
+    const ids = normalizeDeletedIdList(deletedIds);
+    if (!ids.length) return [];
+    const usersById = new Map();
+    for (const state of states) {
+      for (const user of Array.isArray(state?.users) ? state.users : []) {
+        const id = String(user?.id ?? "").trim();
+        if (!id) continue;
+        if (!usersById.has(id)) {
+          usersById.set(id, user);
+        }
+      }
+    }
+    return ids.filter((id) => {
+      const user = usersById.get(String(id));
+      if (!user) return true;
+      return isKnownSystemTestUser(user);
+    });
+  }
+
+  function sanitizeDeletedProductIds(deletedIds, ...states) {
+    const ids = normalizeDeletedIdList(deletedIds);
+    if (!ids.length) return [];
+    const productsById = new Map();
+    for (const state of states) {
+      for (const product of Array.isArray(state?.products) ? state.products : []) {
+        const id = String(product?.id ?? "").trim();
+        if (!id) continue;
+        if (!productsById.has(id)) {
+          productsById.set(id, product);
+        }
+      }
+    }
+    return ids.filter((id) => {
+      const product = productsById.get(String(id));
+      if (!product) return true;
+      return hasSystemTestMarker(product?.name);
+    });
+  }
+
   function stateFootprint(source) {
     const users = Array.isArray(source?.users) ? source.users.length : 0;
     const products = Array.isArray(source?.products) ? source.products.length : 0;
@@ -554,14 +594,16 @@
       preferLocal = false;
     }
     const catalogBackups = mergeCatalogBackups(localMeta[CATALOG_BACKUPS_META_KEY], remoteMeta[CATALOG_BACKUPS_META_KEY]);
-    const deletedProductIds = normalizeDeletedIdList([
+    const deletedProductIdsRaw = normalizeDeletedIdList([
       ...(Array.isArray(localMeta.deletedProductIds) ? localMeta.deletedProductIds : []),
       ...(Array.isArray(remoteMeta.deletedProductIds) ? remoteMeta.deletedProductIds : [])
     ]);
-    const deletedUserIds = normalizeDeletedIdList([
+    const deletedUserIdsRaw = normalizeDeletedIdList([
       ...(Array.isArray(localMeta.deletedUserIds) ? localMeta.deletedUserIds : []),
       ...(Array.isArray(remoteMeta.deletedUserIds) ? remoteMeta.deletedUserIds : [])
     ]);
+    const deletedProductIds = sanitizeDeletedProductIds(deletedProductIdsRaw, localState, remoteState);
+    const deletedUserIds = sanitizeDeletedUserIds(deletedUserIdsRaw, localState, remoteState);
     const allowRemoteOperationalInsert = !preferLocal;
     const mergedOpenComandasRaw = mergeComandasById(localState?.openComandas, remoteState?.openComandas, {
       preferLocal,
@@ -1126,6 +1168,8 @@
   function normalizeStateShape(source) {
     const parsed = source && typeof source === "object" ? source : {};
     const fallback = initialState();
+    const deletedProductIdsRaw = normalizeDeletedIdList(parsed.meta?.deletedProductIds);
+    const deletedUserIdsRaw = normalizeDeletedIdList(parsed.meta?.deletedUserIds);
     const normalized = {
       ...fallback,
       ...parsed,
@@ -1152,8 +1196,8 @@
         ...fallback.meta,
         ...(parsed.meta || {}),
         [CATALOG_BACKUPS_META_KEY]: normalizeCatalogBackups(parsed.meta?.[CATALOG_BACKUPS_META_KEY]),
-        deletedProductIds: normalizeDeletedIdList(parsed.meta?.deletedProductIds),
-        deletedUserIds: normalizeDeletedIdList(parsed.meta?.deletedUserIds),
+        deletedProductIds: deletedProductIdsRaw,
+        deletedUserIds: deletedUserIdsRaw,
         [FINAL_CLIENT_PREP_FLAG]: parsed.meta?.[FINAL_CLIENT_PREP_FLAG] === true,
         [FINAL_CLIENT_PREP_MARKER]:
           typeof parsed.meta?.[FINAL_CLIENT_PREP_MARKER] === "string" && parsed.meta?.[FINAL_CLIENT_PREP_MARKER]
@@ -1167,10 +1211,15 @@
       cash: { ...fallback.cash, ...(parsed.cash || {}) },
       session: { userId: parsed.session?.userId || null }
     };
+    normalized.meta.deletedUserIds = sanitizeDeletedUserIds(normalized.meta.deletedUserIds, normalized);
+    normalized.meta.deletedProductIds = sanitizeDeletedProductIds(normalized.meta.deletedProductIds, normalized);
 
     ensureSystemUsers(normalized);
     const recovered = applyCatalogBackupRecovery(normalized);
     recovered.seq = recovered.seq || normalized.seq || {};
+    recovered.meta = recovered.meta || {};
+    recovered.meta.deletedUserIds = sanitizeDeletedUserIds(recovered.meta.deletedUserIds, normalized, recovered);
+    recovered.meta.deletedProductIds = sanitizeDeletedProductIds(recovered.meta.deletedProductIds, normalized, recovered);
     applyEduardoCredentialRecovery(recovered);
     purgeSystemTestArtifacts(recovered);
     applyFinalClientPreparation(recovered);
