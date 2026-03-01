@@ -169,6 +169,21 @@
     return new Date(value).toLocaleString("pt-BR");
   }
 
+  function formatDate(value) {
+    if (!value) return "-";
+    return new Date(value).toLocaleDateString("pt-BR");
+  }
+
+  function formatDateOnlySafe(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "-";
+    const directIsoDate = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (directIsoDate) {
+      return `${directIsoDate[3]}/${directIsoDate[2]}/${directIsoDate[1]}`;
+    }
+    return formatDate(raw);
+  }
+
   function formatDateTimeWithDay(value) {
     if (!value) return "-";
     return new Date(value).toLocaleString("pt-BR", {
@@ -750,12 +765,17 @@
     const createdAt = typeof parsed.createdAt === "string" && parsed.createdAt ? parsed.createdAt : isoNow();
     const closedAt = typeof parsed.closedAt === "string" && parsed.closedAt ? parsed.closedAt : createdAt;
     const openedAt = typeof parsed.openedAt === "string" ? parsed.openedAt : "";
+    const referenceDayRaw =
+      typeof parsed.referenceDay === "string" && parsed.referenceDay
+        ? parsed.referenceDay
+        : String(openedAt || closedAt || createdAt).slice(0, 10);
     return {
       id: String(parsed.id || `CHR-${fallbackId + 1}`),
       cashClosureId: String(parsed.cashClosureId || ""),
       cashId: String(parsed.cashId || ""),
       openedAt,
       closedAt,
+      referenceDay: String(referenceDayRaw || "").slice(0, 10),
       createdAt,
       createdById: parsed.createdById ?? null,
       createdByName: String(parsed.createdByName || ""),
@@ -2854,7 +2874,7 @@
       .map(([method, total]) => `<tr><td>${esc(paymentLabel(method))}</td><td class="right">${money(total)}</td></tr>`)
       .join("");
     const orderedCommandas = [...commandas].sort(
-      (a, b) => new Date(a.closedAt || a.createdAt || 0) - new Date(b.closedAt || b.createdAt || 0)
+      (a, b) => new Date(a.createdAt || a.closedAt || 0) - new Date(b.createdAt || b.closedAt || 0)
     );
     const totals = orderedCommandas.reduce(
       (acc, comanda) => {
@@ -2867,47 +2887,102 @@
       },
       { soldQty: 0, soldValue: 0, returnedQty: 0, returnedValue: 0 }
     );
-    const comandaRows = orderedCommandas
+    const eventTypeLabels = {
+      comanda_aberta: "Comanda aberta",
+      comanda_obs: "Observacao",
+      comanda_finalizada: "Comanda finalizada",
+      comanda_finalizada_auto: "Comanda finalizada auto",
+      item_add: "Item adicionado",
+      item_incrementado: "Item incrementado",
+      item_reduzido: "Item reduzido",
+      item_cancelado: "Item cancelado",
+      item_entregue: "Item entregue",
+      cozinha_status: "Status cozinha",
+      cozinha_prioridade: "Prioridade cozinha"
+    };
+    const eventLabel = (type) => eventTypeLabels[String(type || "")] || String(type || "Evento");
+
+    const unifiedComandaRows = orderedCommandas
       .map((comanda) => {
         const metrics = computeComandaSaleAndReturns(comanda);
         const responsible = resolveComandaResponsibleName(comanda);
-        const closedRef = comanda.closedAt || comanda.createdAt;
-        return `<tr>
-          <td>${esc(comanda.id || "-")}</td>
+        const allEvents = [...(comanda.events || [])].sort((a, b) => new Date(a?.ts || 0) - new Date(b?.ts || 0));
+        const itemEventsById = new Map();
+        const comandaLevelEvents = [];
+        for (const event of allEvents) {
+          const itemId = String(event?.itemId || "").trim();
+          if (itemId) {
+            if (!itemEventsById.has(itemId)) itemEventsById.set(itemId, []);
+            itemEventsById.get(itemId).push(event);
+          } else {
+            comandaLevelEvents.push(event);
+          }
+        }
+        const items = [...(comanda.items || [])].sort((a, b) => new Date(a?.createdAt || 0) - new Date(b?.createdAt || 0));
+        const itemRows = items
+          .map((item) => {
+            const itemId = String(item?.id || "").trim();
+            const itemEvents = itemEventsById.get(itemId) || [];
+            const addedAt = itemEvents.find((event) => event?.type === "item_add")?.ts || item?.createdAt || "";
+            const lastChangeAt =
+              itemEvents[itemEvents.length - 1]?.ts || item?.lastIncrementAt || item?.canceledAt || item?.deliveredAt || item?.createdAt || "";
+            const changesText = itemEvents.length
+              ? itemEvents
+                  .map(
+                    (event) =>
+                      esc(
+                        `${formatDateTime(event?.ts)} - ${eventLabel(event?.type)}${event?.actorName ? ` (${event.actorName})` : ""}: ${String(event?.detail || "-")}`
+                      )
+                  )
+                  .join("<br />")
+              : "Sem alteracoes registradas.";
+            const qty = Number(item?.qty || 0);
+            return `<tr class="comanda-detail-item-row">
+              <td>${esc(comanda.id || "-")}</td>
+              <td>${esc(formatDateTime(comanda.createdAt))}</td>
+              <td>${esc(responsible || "-")}</td>
+              <td>${esc(comanda.table || "-")}</td>
+              <td>${esc(comanda.customer || "-")}</td>
+              <td>${esc(closureStatusLabel(comanda.status))}</td>
+              <td>${esc(paymentLabel(comanda.payment?.method || "nao_finalizada"))}</td>
+              <td>${esc(item?.name || "-")}<br /><span class="small">Status: ${esc(cashHistoryItemStatusLabel(item))}</span></td>
+              <td class="center">${qty}</td>
+              <td>${esc(formatDateTime(addedAt))}</td>
+              <td>${changesText}</td>
+            </tr>`;
+          })
+          .join("");
+        const comandaEventRows = comandaLevelEvents
+          .map(
+            (event) => `<tr class="comanda-detail-event-row">
+              <td>${esc(comanda.id || "-")}</td>
+              <td>${esc(formatDateTime(comanda.createdAt))}</td>
+              <td>${esc(event?.actorName || responsible || "-")}</td>
+              <td>${esc(comanda.table || "-")}</td>
+              <td>${esc(comanda.customer || "-")}</td>
+              <td>${esc(closureStatusLabel(comanda.status))}</td>
+              <td>${esc(paymentLabel(comanda.payment?.method || "nao_finalizada"))}</td>
+              <td>[Comanda] ${esc(eventLabel(event?.type))}</td>
+              <td class="center">-</td>
+              <td>${esc(formatDateTime(event?.ts))}</td>
+              <td>${esc(String(event?.detail || "-"))}</td>
+            </tr>`
+          )
+          .join("");
+        const summaryRow = `<tr class="comanda-summary-row">
+          <td><b>${esc(comanda.id || "-")}</b></td>
+          <td>${esc(formatDateTime(comanda.createdAt))}</td>
           <td>${esc(responsible || "-")}</td>
           <td>${esc(comanda.table || "-")}</td>
           <td>${esc(comanda.customer || "-")}</td>
           <td>${esc(closureStatusLabel(comanda.status))}</td>
           <td>${esc(paymentLabel(comanda.payment?.method || "nao_finalizada"))}</td>
+          <td><b>Resumo da comanda</b></td>
           <td class="center">${metrics.soldQty}</td>
-          <td class="center">${metrics.returnedQty}</td>
-          <td class="right">${money(comandaTotal(comanda))}</td>
-          <td>${esc(formatDateTime(closedRef))}</td>
+          <td>${esc(formatDateTime(comanda.closedAt || comanda.createdAt))}</td>
+          <td>Total: <b>${money(comandaTotal(comanda))}</b> | Devolvidos/excluidos: <b>${metrics.returnedQty}</b></td>
         </tr>`;
-      })
-      .join("");
-    const itemRows = orderedCommandas
-      .flatMap((comanda) => {
-        const responsible = resolveComandaResponsibleName(comanda);
-        const closedRef = comanda.closedAt || comanda.createdAt;
-        return (comanda.items || []).map((item) => {
-          const qty = Number(item.qty || 0);
-          const unitPrice = Number(item.priceAtSale || 0);
-          const subtotal = qty * unitPrice;
-          const charged = itemCountsForTotal(item);
-          const subtotalText = charged ? money(subtotal) : "Nao cobrado";
-          return `<tr>
-            <td>${esc(formatDateTime(closedRef))}</td>
-            <td>${esc(comanda.id || "-")}</td>
-            <td>${esc(responsible || "-")}</td>
-            <td>${esc(comanda.table || "-")}</td>
-            <td>${esc(item.name || "-")}</td>
-            <td class="center">${qty}</td>
-            <td class="right">${money(unitPrice)}</td>
-            <td class="right">${subtotalText}</td>
-            <td>${esc(cashHistoryItemStatusLabel(item))}</td>
-          </tr>`;
-        });
+        return `${summaryRow}${itemRows}${comandaEventRows}`;
       })
       .join("");
     const soldItemsMap = new Map();
@@ -2947,25 +3022,19 @@
             th { background: #e8eef6; font-weight: 700; }
             thead { display: table-header-group; }
             tr { break-inside: avoid; page-break-inside: avoid; }
-            .comandas-table th:nth-child(1) { width: 8%; }
-            .comandas-table th:nth-child(2) { width: 11%; }
-            .comandas-table th:nth-child(3) { width: 10%; }
-            .comandas-table th:nth-child(4) { width: 10%; }
-            .comandas-table th:nth-child(5) { width: 9%; }
-            .comandas-table th:nth-child(6) { width: 11%; }
-            .comandas-table th:nth-child(7) { width: 10%; }
-            .comandas-table th:nth-child(8) { width: 11%; }
-            .comandas-table th:nth-child(9) { width: 8%; }
-            .comandas-table th:nth-child(10) { width: 12%; }
-            .items-table th:nth-child(1) { width: 13%; }
-            .items-table th:nth-child(2) { width: 9%; }
-            .items-table th:nth-child(3) { width: 11%; }
-            .items-table th:nth-child(4) { width: 10%; }
-            .items-table th:nth-child(5) { width: 18%; }
-            .items-table th:nth-child(6) { width: 6%; }
-            .items-table th:nth-child(7) { width: 9%; }
-            .items-table th:nth-child(8) { width: 9%; }
-            .items-table th:nth-child(9) { width: 15%; }
+            .comandas-unified-table th:nth-child(1) { width: 6%; }
+            .comandas-unified-table th:nth-child(2) { width: 10%; }
+            .comandas-unified-table th:nth-child(3) { width: 9%; }
+            .comandas-unified-table th:nth-child(4) { width: 8%; }
+            .comandas-unified-table th:nth-child(5) { width: 8%; }
+            .comandas-unified-table th:nth-child(6) { width: 7%; }
+            .comandas-unified-table th:nth-child(7) { width: 10%; }
+            .comandas-unified-table th:nth-child(8) { width: 14%; }
+            .comandas-unified-table th:nth-child(9) { width: 5%; }
+            .comandas-unified-table th:nth-child(10) { width: 10%; }
+            .comandas-unified-table th:nth-child(11) { width: 13%; }
+            .comanda-summary-row td { background: #f2f7ff; font-weight: 600; }
+            .comanda-detail-event-row td { background: #fafbff; }
             .right { text-align: right; }
             .center { text-align: center; }
             .footer { margin-top: 10px; border-top: 1px solid #9aa7b7; padding-top: 6px; }
@@ -3001,20 +3070,12 @@
               <tbody>${paymentRows || `<tr><td colspan="2">Sem pagamentos registrados.</td></tr>`}</tbody>
             </table>
 
-            <h2>Comandas do dia</h2>
-            <table class="comandas-table">
+            <h2>Comandas do dia (itens e alteracoes unificados)</h2>
+            <table class="comandas-unified-table">
               <thead>
-                <tr><th>Comanda</th><th>Garcom</th><th>Mesa/ref</th><th>Cliente</th><th>Status</th><th>Pagamento</th><th>Itens vendidos</th><th>Itens devolvidos/excluidos</th><th>Total</th><th>Data</th></tr>
+                <tr><th>Comanda</th><th>Criada em</th><th>Garcom</th><th>Mesa/ref</th><th>Cliente</th><th>Status</th><th>Pagamento</th><th>Item/Alteracao</th><th>Qtd</th><th>Horario inclusao</th><th>Historico de alteracoes</th></tr>
               </thead>
-              <tbody>${comandaRows || `<tr><td colspan="10">Sem comandas no periodo.</td></tr>`}</tbody>
-            </table>
-
-            <h2>Itens das comandas</h2>
-            <table class="items-table">
-              <thead>
-                <tr><th>Data</th><th>Comanda</th><th>Garcom</th><th>Mesa/ref</th><th>Item</th><th>Qtd</th><th>Valor un.</th><th>Subtotal</th><th>Situacao</th></tr>
-              </thead>
-              <tbody>${itemRows || `<tr><td colspan="9">Sem itens no periodo.</td></tr>`}</tbody>
+              <tbody>${unifiedComandaRows || `<tr><td colspan="11">Sem comandas no periodo.</td></tr>`}</tbody>
             </table>
 
             <h2>Todos os itens vendidos (quantidade)</h2>
@@ -3039,6 +3100,7 @@
 
   function createCashHtmlReportRecord(closure, actor, html, options = {}) {
     const createdAt = isoNow();
+    const referenceDay = String(closure?.openedAt || closure?.closedAt || createdAt).slice(0, 10);
     return normalizeCashHtmlReportRecord(
       {
         id: `CHR-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -3046,11 +3108,12 @@
         cashId: closure?.cashId || "",
         openedAt: closure?.openedAt || "",
         closedAt: closure?.closedAt || createdAt,
+        referenceDay,
         createdAt,
         createdById: actor?.id ?? null,
         createdByName: actor?.name || "",
         createdByRole: actor?.role || "",
-        title: options.title || `Fechamento do caixa ${closure?.cashId || "-"}`,
+        title: options.title || `Fechamento do caixa ${closure?.cashId || "-"} | Dia ${formatDateOnlySafe(referenceDay)}`,
         subtitle: options.subtitle || "Historico do dia apos fechamento",
         html: String(html || "")
       },
@@ -3073,47 +3136,6 @@
     });
   }
 
-  function injectHtmlTitle(html, title) {
-    const safeTitle = esc(String(title || "Relatorio de caixa").trim() || "Relatorio de caixa");
-    const source = String(html || "").trim();
-    if (!source) return "";
-    if (/<title[\s>]/i.test(source)) {
-      return source.replace(/<title[^>]*>[\s\S]*?<\/title>/i, `<title>${safeTitle}</title>`);
-    }
-    if (/<head[^>]*>/i.test(source)) {
-      return source.replace(/<head[^>]*>/i, (match) => `${match}\n<title>${safeTitle}</title>`);
-    }
-    if (/<html[^>]*>/i.test(source)) {
-      return source.replace(/<html[^>]*>/i, (match) => `${match}\n<head><title>${safeTitle}</title></head>`);
-    }
-    return `<html><head><title>${safeTitle}</title></head><body>${source}</body></html>`;
-  }
-
-  function openCashHtmlReportPdfDownload(report, options = {}) {
-    if (!report || !String(report.html || "").trim()) {
-      alert("Relatorio indisponivel para gerar PDF.");
-      return;
-    }
-    const title = String(options.title || report.title || `Fechamento ${report.cashId || report.cashClosureId || "-"}`).trim();
-    const popup = window.open("", "_blank", "width=980,height=860");
-    if (!popup) {
-      alert("Permita pop-up para baixar o relatorio em PDF.");
-      return;
-    }
-    const htmlWithTitle = injectHtmlTitle(report.html, title);
-    popup.document.open();
-    popup.document.write(htmlWithTitle);
-    popup.document.close();
-    const triggerPrint = () => {
-      try {
-        popup.focus();
-        popup.print();
-      } catch (_err) {}
-    };
-    popup.onload = () => setTimeout(triggerPrint, 180);
-    setTimeout(triggerPrint, 700);
-  }
-
   function openStoredCashHtmlReport(reportId) {
     const report = (state.cashHtmlReports || []).find((entry) => String(entry.id) === String(reportId));
     if (!report) {
@@ -3123,17 +3145,6 @@
     openCashHtmlReportRecord(report, {
       previewTitle: report.title || `Fechamento ${report.cashId || report.cashClosureId || "-"}`,
       previewSubtitle: `Arquivo salvo em ${formatDateTimeWithDay(report.createdAt || report.closedAt || isoNow())}`
-    });
-  }
-
-  function downloadStoredCashHtmlReportPdf(reportId) {
-    const report = (state.cashHtmlReports || []).find((entry) => String(entry.id) === String(reportId));
-    if (!report) {
-      alert("Arquivo HTML de fechamento nao encontrado.");
-      return;
-    }
-    openCashHtmlReportPdfDownload(report, {
-      title: report.title || `Fechamento ${report.cashId || report.cashClosureId || "-"}`
     });
   }
 
@@ -3149,7 +3160,9 @@
 
     const reportOptions = {
       printedBy: { id: 0, role: "system", name: "Sistema" },
-      title: `Fechamento do caixa ${latestClosure.cashId || latestClosure.id || "-"}`,
+      title: `Fechamento do caixa ${latestClosure.cashId || latestClosure.id || "-"} | Dia ${formatDateOnlySafe(
+        String(latestClosure.openedAt || latestClosure.closedAt || isoNow()).slice(0, 10)
+      )}`,
       subtitle: "HTML restaurado automaticamente do ultimo fechamento"
     };
     const html = buildCashHistoryPrintHtml(latestClosure, reportOptions);
@@ -3194,40 +3207,6 @@
       title: `Historico do dia - Caixa ${state.cash.id}`,
       subtitle: "Previa para conferencia antes do fechamento"
     });
-  }
-
-  function downloadCurrentCashHistoryPdf() {
-    const actor = currentActor();
-    if (!isAdminOrDev(actor)) {
-      alert("Apenas administrador pode baixar o historico de caixa em PDF.");
-      return;
-    }
-    const closedAt = isoNow();
-    const draft = buildCashClosureDraft(closedAt);
-    const preview = {
-      id: `PREV-${state.cash.id}-${Date.now()}`,
-      cashId: state.cash.id,
-      openedAt: state.cash.openedAt,
-      closedAt,
-      commandas: draft.commandas,
-      summary: draft.summary,
-      auditLog: state.auditLog
-    };
-    const reportOptions = {
-      printedBy: actor,
-      title: `Historico do dia - Caixa ${state.cash.id}`,
-      subtitle: "Previa para conferencia antes do fechamento"
-    };
-    const html = buildCashHistoryPrintHtml(preview, reportOptions);
-    openCashHtmlReportPdfDownload(
-      {
-        ...preview,
-        title: reportOptions.title,
-        subtitle: reportOptions.subtitle,
-        html
-      },
-      { title: reportOptions.title }
-    );
   }
 
   function printStoredCashClosure(closureId) {
@@ -3576,7 +3555,6 @@
           </form>
           <div class="actions" style="margin-top:0.75rem;">
             <button type="button" class="btn secondary" data-action="print-cash-day-history">Ver historico do dia</button>
-            <button type="button" class="btn secondary" data-action="download-cash-day-history-pdf">Baixar historico do dia (PDF)</button>
             <button type="button" class="btn secondary" data-action="set-tab" data-role="admin" data-tab="arquivos_html">Arquivos HTML salvos</button>
           </div>
           <p class="note" style="margin-top:0.35rem;">Relatorio simples: resumo do caixa, pagamentos e comandas do dia. No fechamento, o HTML do relatorio e arquivado automaticamente.</p>
@@ -3610,7 +3588,7 @@
           ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="history-table"><thead><tr><th>Arquivo</th><th>Dia referencia</th><th>Caixa</th><th>Fechado em</th><th>Salvo em</th><th>Responsavel</th><th>Acoes</th></tr></thead><tbody>${reports
               .map(
                 (report) =>
-                  `<tr><td>${esc(report.id)}</td><td>${esc(formatDate(report.closedAt || report.createdAt || isoNow()))}</td><td>${esc(report.cashId || "-")}</td><td>${esc(formatDateTimeWithDay(report.closedAt || report.createdAt))}</td><td>${esc(formatDateTimeWithDay(report.createdAt || report.closedAt))}</td><td>${esc(report.createdByName || "-")} (${esc(roleLabel(report.createdByRole || "-"))})</td><td><div class="actions"><button class="btn secondary" data-action="open-cash-html-report" data-id="${esc(report.id)}">Abrir em nova aba</button><button class="btn secondary" data-action="download-cash-html-report-pdf" data-id="${esc(report.id)}">Baixar PDF</button></div></td></tr>`
+                  `<tr><td>${esc(report.id)}</td><td>${esc(formatDateOnlySafe(report.referenceDay || report.openedAt || report.closedAt || report.createdAt || isoNow()))}</td><td>${esc(report.cashId || "-")}</td><td>${esc(formatDateTimeWithDay(report.closedAt || report.createdAt))}</td><td>${esc(formatDateTimeWithDay(report.createdAt || report.closedAt))}</td><td>${esc(report.createdByName || "-")} (${esc(roleLabel(report.createdByRole || "-"))})</td><td><div class="actions"><button class="btn secondary" data-action="open-cash-html-report" data-id="${esc(report.id)}">Abrir em nova aba</button></div></td></tr>`
               )
               .join("")}</tbody></table></div>`
           : `<div class="empty" style="margin-top:0.75rem;">Nenhum HTML de fechamento salvo ainda.</div>`}
@@ -6770,7 +6748,7 @@
     };
     const reportOptions = {
       printedBy: actor,
-      title: `Fechamento do caixa ${closure.cashId}`,
+      title: `Fechamento do caixa ${closure.cashId} | Dia ${formatDateOnlySafe(String(closure.openedAt || closedAt).slice(0, 10))}`,
       subtitle: "Historico do dia apos fechamento"
     };
     const closureHtml = buildCashHistoryPrintHtml(closure, reportOptions);
@@ -6962,11 +6940,6 @@
       return;
     }
 
-    if (action === "download-cash-day-history-pdf") {
-      downloadCurrentCashHistoryPdf();
-      return;
-    }
-
     if (action === "print-cash-closure") {
       printStoredCashClosure(button.dataset.id);
       return;
@@ -6974,11 +6947,6 @@
 
     if (action === "open-cash-html-report") {
       openStoredCashHtmlReport(button.dataset.id);
-      return;
-    }
-
-    if (action === "download-cash-html-report-pdf") {
-      downloadStoredCashHtmlReportPdf(button.dataset.id);
       return;
     }
 
