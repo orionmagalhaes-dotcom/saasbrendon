@@ -3809,12 +3809,8 @@
 
     return `
       <div class="grid cols-2">
-      <div class="card">
-        <div class="field" style="margin-bottom:1rem;">
-          <label>Buscar comanda nas listas (numero, mesa ou referencia)</label>
-          <input data-role="admin-history-comanda-search" value="${esc(uiState.adminHistoryComandaSearch)}" placeholder="Ex.: CMD-0005, mesa 7, joana..." />
-        </div>
-        <h3>Eventos em tempo real</h3>
+        <div class="card">
+          <h3>Eventos em tempo real</h3>
           <p class="note">Eventos em tempo real + eventos preservados nos fechamentos de caixa.</p>
           <p class="note" style="margin-top:0.25rem;">Comandas abertas agora: <b>${openCount}</b> | Comandas fechadas no caixa atual: <b>${closedCount}</b> | Total de comandas no historico minimizado: <b>${archivedCount}</b></p>
           <details class="compact-details" data-persist-key="${esc(auditDetailsKey)}" style="margin-top:0.75rem;"${detailOpenAttr(auditDetailsKey)}>
@@ -3830,6 +3826,10 @@
         : `<div class="empty" style="margin-top:0.55rem;">Sem eventos registrados ainda.</div>`}
           </details>
           ${renderComandaDetailsBox()}
+        </div>
+        <div class="field" style="margin-bottom:1rem;">
+          <label>Buscar comanda (numero, mesa ou referencia)</label>
+          <input data-role="admin-history-comanda-search" value="${esc(uiState.adminHistoryComandaSearch)}" placeholder="Ex.: CMD-0005, mesa 7, joana..." />
         </div>
         ${renderComandaRecordsCompact(openComandas.filter(c => !historyComandaSearch || matchesComandaSearch(c, historyComandaSearch)), {
           title: "Comandas abertas (caixa atual)",
