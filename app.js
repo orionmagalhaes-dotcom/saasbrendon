@@ -3508,6 +3508,42 @@
     });
   }
 
+  function printStoredCashClosureExtended(closureId) {
+    const actor = currentActor();
+    if (!isAdminOrDev(actor)) {
+      alert("Apenas administrador pode visualizar historico estendido.");
+      return;
+    }
+    const closure = state.history90.find((h) => String(h.id) === String(closureId));
+    if (!closure) {
+      alert("Fechamento nao encontrado.");
+      return;
+    }
+    const reportOptions = {
+      printedBy: actor,
+      title: `Fechamento ESTENDIDO ${closure.cashId || closure.id}`,
+      subtitle: `Registro detalhado com log completo - ${closure.id}`
+    };
+    const baseHtml = buildCashHistoryPrintHtml(closure, reportOptions);
+    const auditEvents = dedupeAuditEvents([...(closure.auditLog || [])]).sort((a, b) => new Date(a.ts || 0) - new Date(b.ts || 0));
+    const auditRows = auditEvents.length
+      ? auditEvents.map((e) => `<tr><td>${esc(formatDateTime(e.ts))}</td><td>${esc(e.actorName || "-")} (${esc(roleLabel(e.actorRole || "-"))})</td><td>${esc(eventTypeLabel(e.type || "-"))}</td><td>${esc(e.comandaId || "-")}</td><td>${esc(e.detail || "-")}</td></tr>`).join("")
+      : `<tr><td colspan="5">Sem eventos registrados para este caixa.</td></tr>`;
+    const auditSection = `
+      <h2>Registro completo de alteracoes arquivadas</h2>
+      <p class="small">Inclui todas as acoes de administradores, garcons e cozinheiros registradas durante o turno deste caixa.</p>
+      <table>
+        <thead><tr><th>Data/Hora</th><th>Quem</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th></tr></thead>
+        <tbody>${auditRows}</tbody>
+      </table>
+    `;
+    const extendedHtml = baseHtml.replace("</body>", `${auditSection}</div></body>`).replace("</div></div></body>", "</div></body>");
+    openReceiptPopup(extendedHtml, "Permita pop-up para abrir o historico estendido.", "width=1100,height=900", {
+      previewTitle: reportOptions.title,
+      previewSubtitle: reportOptions.subtitle
+    });
+  }
+
   function findComandaInHistory(comandaId) {
     for (const closure of state.history90 || []) {
       const comanda = (closure.commandas || []).find((c) => c.id === comandaId);
@@ -3861,6 +3897,7 @@
                   <summary><b>${esc(h.id)}</b> | Aberto: ${formatDateTimeWithDay(h.openedAt)} | Fechado: ${formatDateTimeWithDay(h.closedAt)} | ${summary.commandasCount} comandas | ${money(summary.total)}</summary>
                   <div class="actions" style="margin-top:0.6rem;">
                     <button class="btn secondary" data-action="print-cash-closure" data-id="${esc(h.id)}">Ver fechamento</button>
+                    <button class="btn secondary" data-action="print-cash-closure-extended" data-id="${esc(h.id)}">Ver fechamento estendido</button>
                   </div>
                   <div class="table-wrap" style="margin-top:0.6rem;">
                     <table>
@@ -4020,8 +4057,11 @@
               </div>
               <span class="monitor-order-status ${statusClass}">${esc(statusLabel)}</span>
             </div>
-            <details class="monitor-order-details">
-              <summary>Expandir item</summary>
+            <div class="monitor-order-collapsed-note">
+              Pedido minimizado para focar no fluxo.
+            </div>
+            <details class="monitor-order-details" data-persist-key="admin-monitor-row-${esc(row.comanda.id)}-${esc(row.item.id)}"${detailOpenAttr(`admin-monitor-row-${row.comanda.id}-${row.item.id}`)}>
+              <summary>Expandir a&ccedil;&otilde;es do pedido</summary>
               <div class="monitor-order-meta">
                 <div class="monitor-meta-box"><span>Atualizado em</span><b>${esc(formatDateTime(row.item.kitchenStatusAt || row.item.createdAt))}</b></div>
                 <div class="monitor-meta-box"><span>Entrega</span><b>${esc(deliveryInfo)}</b></div>
@@ -4033,9 +4073,6 @@
               <div class="monitor-order-actions">${statusActions}</div>
               <div class="monitor-order-priority">${priorityActions}</div>
             </details>
-            <div class="monitor-order-collapsed-note">
-              Item minimizado. Clique em "Expandir item" para editar status e prioridade.
-            </div>
           </article>
         `;
       })
@@ -5124,6 +5161,17 @@
   }
 
   function render() {
+    const activeEl = document.activeElement;
+    const activeSelector = activeEl?.id
+      ? `#${activeEl.id}`
+      : activeEl?.dataset?.role
+        ? `[data-role="${activeEl.dataset.role}"]`
+        : null;
+    const isInput = activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA");
+    const selectionStart = isInput ? activeEl.selectionStart : null;
+    const selectionEnd = isInput ? activeEl.selectionEnd : null;
+    const scrollY = window.scrollY;
+
     const user = getCurrentUser();
     if (!user) {
       renderLogin();
@@ -5145,6 +5193,23 @@
     }
 
     hydrateAfterRender();
+
+    if (activeSelector) {
+      const el = document.querySelector(activeSelector);
+      if (el) {
+        el.focus();
+        if (selectionStart !== null && selectionEnd !== null && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) {
+          try {
+            el.setSelectionRange(selectionStart, selectionEnd);
+          } catch (e) {
+            // Some input types (like number) throw if you try to set selection range
+          }
+        }
+      }
+    }
+    if (scrollY > 0) {
+      window.scrollTo(0, scrollY);
+    }
   }
 
   function hydrateAfterRender() {
@@ -7730,6 +7795,11 @@
 
       if (action === "print-cash-closure") {
         printStoredCashClosure(button.dataset.id);
+        return;
+      }
+
+      if (action === "print-cash-closure-extended") {
+        printStoredCashClosureExtended(button.dataset.id);
         return;
       }
 
