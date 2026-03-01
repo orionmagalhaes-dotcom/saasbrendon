@@ -1700,8 +1700,8 @@
           pushRemoteMonitorEvent(message.payload);
           const user = getCurrentUser();
           if (
-            (user?.role === "admin" && (uiState.adminTab === "monitor" || uiState.adminTab === "historico")) ||
-            (user?.role === "dev" && uiState.devTab === "monitor")
+            (user?.role === "admin" && (uiState.adminTab === "monitor" || uiState.adminTab === "dashboard")) ||
+            (user?.role === "dev" && (uiState.devTab === "monitor" || uiState.devTab === "dashboard"))
           ) {
             render();
           }
@@ -2436,6 +2436,9 @@
             <button class="btn secondary" data-action="set-tab" data-role="admin" data-tab="financeiro">Estoque e Financas</button>
           </div>
         </div>
+      </div>
+      <div style="margin-top:0.75rem;">
+        ${renderAdminHistory()}
       </div>
     `;
   }
@@ -3881,7 +3884,6 @@
       { key: "monitor", label: "Monitor" },
       { key: "apagar", label: "A Pagar" },
       { key: "financeiro", label: "Financas" },
-      { key: "historico", label: "Historico" },
       { key: "caixa", label: "Fechar Caixa" }
     ];
 
@@ -3907,9 +3909,6 @@
         break;
       case "financeiro":
         content = renderAdminFinance();
-        break;
-      case "historico":
-        content = renderAdminHistory();
         break;
       case "caixa":
         content = renderAdminCash();
@@ -3976,7 +3975,6 @@
       { key: "devices", label: "Dispositivos" },
       { key: "apagar", label: "A Pagar" },
       { key: "financeiro", label: "Financas" },
-      { key: "historico", label: "Historico" },
       { key: "caixa", label: "Fechar Caixa" },
       { key: "arquivos_html", label: "Arquivos HTML" }
     ];
@@ -4006,9 +4004,6 @@
         break;
       case "financeiro":
         content = renderAdminFinance();
-        break;
-      case "historico":
-        content = renderAdminHistory();
         break;
       case "caixa":
         content = renderAdminCash();
@@ -7712,13 +7707,13 @@
     if (
       user?.role === "admin" &&
       (uiState.adminTab === "monitor" ||
-        uiState.adminTab === "historico" ||
+        uiState.adminTab === "dashboard" ||
         uiState.adminTab === "arquivos_html" ||
         (uiState.adminTab === "comandas" && uiState.waiterTab === "cozinha"))
     ) {
       render();
     }
-    if (user?.role === "dev" && (uiState.devTab === "monitor" || uiState.devTab === "devices")) {
+    if (user?.role === "dev" && (uiState.devTab === "monitor" || uiState.devTab === "devices" || uiState.devTab === "dashboard")) {
       render();
     }
   }, 5000);
