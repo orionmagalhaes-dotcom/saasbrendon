@@ -508,12 +508,51 @@
     return merged.slice(0, 5000);
   }
 
+  function stateFootprint(source) {
+    const users = Array.isArray(source?.users) ? source.users.length : 0;
+    const products = Array.isArray(source?.products) ? source.products.length : 0;
+    const openComandas = Array.isArray(source?.openComandas) ? source.openComandas.length : 0;
+    const closedComandas = Array.isArray(source?.closedComandas) ? source.closedComandas.length : 0;
+    const history90 = Array.isArray(source?.history90) ? source.history90.length : 0;
+    const auditLog = Array.isArray(source?.auditLog) ? source.auditLog.length : 0;
+    const payables = Array.isArray(source?.payables) ? source.payables.length : 0;
+    const cashHtmlReports = Array.isArray(source?.cashHtmlReports) ? source.cashHtmlReports.length : 0;
+    const cookHistory = Array.isArray(source?.cookHistory) ? source.cookHistory.length : 0;
+    return {
+      users,
+      products,
+      openComandas,
+      closedComandas,
+      history90,
+      auditLog,
+      payables,
+      cashHtmlReports,
+      cookHistory,
+      catalogRows: users + products,
+      operationalRows: openComandas + closedComandas + history90 + auditLog + payables + cashHtmlReports + cookHistory
+    };
+  }
+
+  function isLikelyResetState(source) {
+    const fp = stateFootprint(source);
+    return fp.users <= 1 && fp.products === 0 && fp.openComandas === 0 && fp.closedComandas === 0 && fp.history90 === 0 && fp.payables === 0 && fp.cashHtmlReports === 0;
+  }
+
+  function shouldForceRemotePreference(localCandidate, remoteCandidate) {
+    if (!isLikelyResetState(localCandidate)) return false;
+    const remote = stateFootprint(remoteCandidate);
+    return remote.catalogRows >= 3 || remote.operationalRows >= 5;
+  }
+
   function mergeStateForCloud(localState, remoteState) {
     const localMeta = localState?.meta || {};
     const remoteMeta = remoteState?.meta || {};
     const localUpdated = parseUpdatedAtTimestamp(localMeta.updatedAt);
     const remoteUpdated = parseUpdatedAtTimestamp(remoteMeta.updatedAt);
-    const preferLocal = localUpdated >= remoteUpdated;
+    let preferLocal = localUpdated >= remoteUpdated;
+    if (preferLocal && shouldForceRemotePreference(localState, remoteState)) {
+      preferLocal = false;
+    }
     const catalogBackups = mergeCatalogBackups(localMeta[CATALOG_BACKUPS_META_KEY], remoteMeta[CATALOG_BACKUPS_META_KEY]);
     const deletedProductIds = normalizeDeletedIdList([
       ...(Array.isArray(localMeta.deletedProductIds) ? localMeta.deletedProductIds : []),
@@ -1398,6 +1437,10 @@
       const remoteMetaUpdated = parseUpdatedAtTimestamp(data.payload?.meta?.updatedAt);
       const remoteUpdated = remoteMetaUpdated || (!localUpdated ? parseUpdatedAtTimestamp(data.updated_at) : 0);
       if (Number.isFinite(remoteUpdated) && remoteUpdated > localUpdated) {
+        if (shouldForceRemotePreference(data.payload, state)) {
+          setSupabaseStatus("aviso", "Pull remoto ignorado para evitar sobrescrita destrutiva do historico local.");
+          return;
+        }
         const incomingMerged = mergeStateForCloud(data.payload, state);
         const incomingRecovered = applyCatalogBackupRecovery(incomingMerged, state, data.payload);
         ensureCatalogBackup(incomingRecovered, "pull");
