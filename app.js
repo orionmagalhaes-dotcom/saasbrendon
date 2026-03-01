@@ -2424,16 +2424,6 @@
           <div class="kpi"><p>Comandas Finalizadas Hoje</p><b>${closed}</b></div>
           <div class="kpi"><p>Total Vendido Hoje</p><b>${money(grossToday)}</b></div>
         </div>
-        <div class="card">
-          <h3>Atalhos</h3>
-          <div class="actions" style="margin-top:0.75rem;">
-            <button class="btn secondary" data-action="set-tab" data-role="admin" data-tab="comandas">Comandas (modo garcom)</button>
-            <button class="btn secondary" data-action="set-tab" data-role="admin" data-tab="produtos">Gerenciar Produtos</button>
-            <button class="btn secondary" data-action="set-tab" data-role="admin" data-tab="funcionarios">Funcionarios</button>
-            <button class="btn secondary" data-action="set-tab" data-role="admin" data-tab="avulsa">Venda Avulsa</button>
-            <button class="btn secondary" data-action="set-tab" data-role="admin" data-tab="financeiro">Estoque e Financas</button>
-          </div>
-        </div>
       </div>
       <div style="margin-top:0.75rem;">
         ${renderAdminHistory()}
