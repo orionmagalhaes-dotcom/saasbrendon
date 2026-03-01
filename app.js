@@ -2930,24 +2930,49 @@
         <head>
           <title>Historico ${esc(cashId)}</title>
           <style>
-            @page { margin: 10mm; }
-            body { font-family: "Courier New", monospace; margin: 0; padding: 8px; color: #111; }
-            .report { max-width: 190mm; margin: 0 auto; }
-            h1 { margin: 0 0 4px; text-align: center; font-size: 16px; }
-            h2 { margin: 12px 0 6px; font-size: 13px; border-top: 1px dashed #888; padding-top: 8px; }
-            p { margin: 2px 0; font-size: 12px; line-height: 1.25; }
-            .small { font-size: 11px; color: #444; }
+            @page { size: A4 landscape; margin: 8mm; }
+            * { box-sizing: border-box; }
+            body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; padding: 8px; color: #111; background: #fff; }
+            .report { width: 100%; margin: 0 auto; }
+            h1 { margin: 0 0 4px; text-align: center; font-size: 18px; letter-spacing: 0.2px; }
+            h2 { margin: 12px 0 6px; font-size: 13px; border-top: 1px solid #9aa7b7; padding-top: 8px; }
+            p { margin: 2px 0; font-size: 11px; line-height: 1.3; }
+            .small { font-size: 10px; color: #4d5b6b; }
             .summary { margin-top: 8px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
-            .box { border: 1px solid #666; padding: 6px; }
-            .box b { display: block; font-size: 11px; margin-bottom: 2px; }
-            table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 11px; }
-            th, td { border: 1px solid #666; padding: 4px 5px; text-align: left; vertical-align: top; }
-            th { background: #f2f2f2; }
+            .box { border: 1px solid #75859a; padding: 6px; min-height: 45px; background: #f9fbfd; }
+            .box b { display: block; font-size: 10px; margin-bottom: 2px; text-transform: uppercase; letter-spacing: 0.2px; color: #324355; }
+            .table-block { margin-top: 8px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 10px; table-layout: fixed; }
+            th, td { border: 1px solid #9aa7b7; padding: 4px 5px; text-align: left; vertical-align: top; overflow-wrap: anywhere; word-break: break-word; }
+            th { background: #e8eef6; font-weight: 700; }
+            thead { display: table-header-group; }
+            tr { break-inside: avoid; page-break-inside: avoid; }
+            .comandas-table th:nth-child(1) { width: 8%; }
+            .comandas-table th:nth-child(2) { width: 11%; }
+            .comandas-table th:nth-child(3) { width: 10%; }
+            .comandas-table th:nth-child(4) { width: 10%; }
+            .comandas-table th:nth-child(5) { width: 9%; }
+            .comandas-table th:nth-child(6) { width: 11%; }
+            .comandas-table th:nth-child(7) { width: 10%; }
+            .comandas-table th:nth-child(8) { width: 11%; }
+            .comandas-table th:nth-child(9) { width: 8%; }
+            .comandas-table th:nth-child(10) { width: 12%; }
+            .items-table th:nth-child(1) { width: 13%; }
+            .items-table th:nth-child(2) { width: 9%; }
+            .items-table th:nth-child(3) { width: 11%; }
+            .items-table th:nth-child(4) { width: 10%; }
+            .items-table th:nth-child(5) { width: 18%; }
+            .items-table th:nth-child(6) { width: 6%; }
+            .items-table th:nth-child(7) { width: 9%; }
+            .items-table th:nth-child(8) { width: 9%; }
+            .items-table th:nth-child(9) { width: 15%; }
             .right { text-align: right; }
             .center { text-align: center; }
-            .footer { margin-top: 10px; border-top: 1px dashed #888; padding-top: 6px; }
+            .footer { margin-top: 10px; border-top: 1px solid #9aa7b7; padding-top: 6px; }
             @media print {
               body { padding: 0; }
+              .report { width: 100%; max-width: none; }
+              * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
             }
           </style>
         </head>
@@ -2971,13 +2996,13 @@
             </div>
 
             <h2>Resumo por pagamento</h2>
-            <table>
+            <table class="payment-table">
               <thead><tr><th>Metodo</th><th class="right">Total</th></tr></thead>
               <tbody>${paymentRows || `<tr><td colspan="2">Sem pagamentos registrados.</td></tr>`}</tbody>
             </table>
 
             <h2>Comandas do dia</h2>
-            <table>
+            <table class="comandas-table">
               <thead>
                 <tr><th>Comanda</th><th>Garcom</th><th>Mesa/ref</th><th>Cliente</th><th>Status</th><th>Pagamento</th><th>Itens vendidos</th><th>Itens devolvidos/excluidos</th><th>Total</th><th>Data</th></tr>
               </thead>
@@ -2985,7 +3010,7 @@
             </table>
 
             <h2>Itens das comandas</h2>
-            <table>
+            <table class="items-table">
               <thead>
                 <tr><th>Data</th><th>Comanda</th><th>Garcom</th><th>Mesa/ref</th><th>Item</th><th>Qtd</th><th>Valor un.</th><th>Subtotal</th><th>Situacao</th></tr>
               </thead>
@@ -3079,12 +3104,14 @@
     popup.document.open();
     popup.document.write(htmlWithTitle);
     popup.document.close();
-    setTimeout(() => {
+    const triggerPrint = () => {
       try {
         popup.focus();
         popup.print();
       } catch (_err) {}
-    }, 320);
+    };
+    popup.onload = () => setTimeout(triggerPrint, 180);
+    setTimeout(triggerPrint, 700);
   }
 
   function openStoredCashHtmlReport(reportId) {
