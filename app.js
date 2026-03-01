@@ -1983,6 +1983,7 @@
     if (role === "dev") return "Dev";
     if (role === "waiter") return "Garcom";
     if (role === "cook") return "Cozinheiro";
+    if (role === "system") return "Sistema";
     return role;
   }
 
@@ -2027,6 +2028,9 @@
       item_incrementado: "Quantidade ajustada",
       item_cancelado: "Item cancelado",
       item_reduzido: "Item reduzido",
+      admin_item_add: "Item adicionado pelo adm",
+      admin_item_edit: "Item editado pelo adm",
+      admin_item_remove: "Item removido pelo adm",
       item_entregue: "Item entregue",
       cozinha_status: "Atualizacao da cozinha",
       cozinha_recebido: "Recebido na cozinha",
@@ -2034,6 +2038,7 @@
       comanda_obs: "Observacao adicionada",
       comanda_finalizada: "Comanda finalizada",
       comanda_finalizada_auto: "Finalizacao automatica",
+      admin_comanda_edit: "Comanda editada pelo adm",
       garcom_ciente_alerta: "Garcom ciente do alerta",
       garcom_entregou_pedido: "Garcom confirmou entrega",
       venda_avulsa: "Venda avulsa",
@@ -2977,9 +2982,13 @@
       item_incrementado: "Item incrementado",
       item_reduzido: "Item reduzido",
       item_cancelado: "Item cancelado",
+      admin_item_add: "Item adicionado pelo adm",
+      admin_item_edit: "Item editado pelo adm",
+      admin_item_remove: "Item removido pelo adm",
       item_entregue: "Item entregue",
       cozinha_status: "Status cozinha",
-      cozinha_prioridade: "Prioridade cozinha"
+      cozinha_prioridade: "Prioridade cozinha",
+      admin_comanda_edit: "Comanda editada pelo adm"
     };
     const eventLabel = (type) => eventTypeLabels[String(type || "")] || String(type || "Evento");
 
@@ -3330,23 +3339,28 @@
     const creatorRole = String(creatorUser?.role || openEvent?.actorRole || "").trim();
     const creatorRoleText = creatorRole ? ` (${roleLabel(creatorRole)})` : "";
     const showCreatorForAdmin = isAdminOrDev(viewer);
+    const showAdminControls = isAdminOrDev(viewer);
+    const isOpenComanda = state.openComandas.some((entry) => String(entry?.id || "") === String(comanda.id || ""));
 
     const rows = (comanda.items || [])
-      .map(
-        (item) =>
-          `<tr><td>${esc(item.name)}</td><td>${item.qty}</td><td>${money(item.priceAtSale)}</td><td>${
-            itemNeedsKitchen(item) && !item.canceled
-              ? `${esc(kitchenStatusLabel(item.kitchenStatus || "fila"))} | ${esc(kitchenPriorityLabel(item.kitchenPriority || "normal"))}`
-              : item.canceled
-                ? "Cancelado"
-                : item.delivered
-                  ? "Entregue"
-                  : "Pendente"
-          }</td><td>${esc(item.waiterNote || "-")}${item.deliveryRequested ? ` | Entrega: ${esc(item.deliveryRecipient || "-")} @ ${esc(item.deliveryLocation || "-")}` : ""}</td></tr>`
-      )
+      .map((item) => {
+        const itemStatus =
+          itemNeedsKitchen(item) && !item.canceled
+            ? `${esc(kitchenStatusLabel(item.kitchenStatus || "fila"))} | ${esc(kitchenPriorityLabel(item.kitchenPriority || "normal"))}`
+            : item.canceled
+              ? "Cancelado"
+              : item.delivered
+                ? "Entregue"
+                : "Pendente";
+        const adminActions =
+          showAdminControls && item.id
+            ? `<td><div class="actions admin-item-actions"><button class="btn secondary compact-action" data-action="admin-edit-comanda-item" data-comanda-id="${esc(comanda.id)}" data-item-id="${esc(item.id)}">Editar</button><button class="btn danger compact-action" data-action="admin-remove-comanda-item" data-comanda-id="${esc(comanda.id)}" data-item-id="${esc(item.id)}">Remover</button></div></td>`
+            : "";
+        return `<tr><td>${esc(item.name)}</td><td>${item.qty}</td><td>${money(item.priceAtSale)}</td><td>${itemStatus}</td><td>${esc(item.waiterNote || "-")}${item.deliveryRequested ? ` | Entrega: ${esc(item.deliveryRecipient || "-")} @ ${esc(item.deliveryLocation || "-")}` : ""}</td>${adminActions}</tr>`;
+      })
       .join("");
     const events = (comanda.events || [])
-      .slice(-20)
+      .slice(-40)
       .reverse()
       .map((e) => `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName)}</td><td>${renderEventTypeTag(e.type)}</td><td>${esc(e.detail)}</td></tr>`)
       .join("");
@@ -3361,10 +3375,15 @@
         ${showCreatorForAdmin ? `<p class="note">Criada por: ${esc(creatorName)}${esc(creatorRoleText)}</p>` : ""}
         <p class="note">Criada em ${formatDateTime(comanda.createdAt)} ${comanda.closedAt ? `| Fechada em ${formatDateTime(comanda.closedAt)}` : ""}</p>
         <p class="note">Pagamento: ${esc(paymentLabel(comanda.payment?.method || "-"))} | Total: <b>${money(comandaTotal(comanda))}</b></p>
+        ${
+          showAdminControls
+            ? `<div class="actions" style="margin-top:0.5rem;"><button class="btn secondary" data-action="admin-edit-comanda" data-comanda-id="${esc(comanda.id)}">Editar dados da comanda</button><button class="btn ok" data-action="admin-add-comanda-item" data-comanda-id="${esc(comanda.id)}">Adicionar item pelo adm</button></div><p class="note" style="margin-top:0.35rem;">As alteracoes registram: adicionado pelo adm, editado pelo adm ou removido pelo adm.${isOpenComanda ? "" : " Comanda fechada/historica: estoque nao e ajustado."}</p>`
+            : ""
+        }
         <div class="table-wrap" style="margin-top:0.5rem;">
           <table>
-            <thead><tr><th>Produto</th><th>Qtd</th><th>Unit.</th><th>Status</th><th>Obs</th></tr></thead>
-            <tbody>${rows || `<tr><td colspan="5">Sem itens.</td></tr>`}</tbody>
+            <thead><tr><th>Produto</th><th>Qtd</th><th>Unit.</th><th>Status</th><th>Obs</th>${showAdminControls ? "<th>Acoes adm</th>" : ""}</tr></thead>
+            <tbody>${rows || `<tr><td colspan="${showAdminControls ? 6 : 5}">Sem itens.</td></tr>`}</tbody>
           </table>
         </div>
         <div class="table-wrap" style="margin-top:0.5rem;">
@@ -3382,13 +3401,29 @@
     return comanda.closedAt || lastEventAt || comanda.createdAt;
   }
 
+  function comandaKitchenNotice(comanda) {
+    const items = Array.isArray(comanda?.items) ? comanda.items : [];
+    const hasMissing = items.some((item) => itemNeedsKitchen(item) && !item.canceled && (item.kitchenStatus || "fila") === "em_falta");
+    if (hasMissing) {
+      return { tone: "falta", text: "Aviso: cozinha marcou item em falta." };
+    }
+    const hasReady = items.some((item) => itemNeedsKitchen(item) && !item.canceled && isKitchenReadyForWaiter(item));
+    if (hasReady) {
+      return { tone: "pronto", text: "Aviso: ha item disponivel para entrega da cozinha." };
+    }
+    return null;
+  }
+
   function renderComandaRecordsCompact(commandas, options = {}) {
     const limit = Number(options.limit || 60);
     const title = options.title || "Registros por Comanda";
     const keyPrefix = detailKey("comanda-records", options.keyPrefix || title);
+    const showKitchenNotice = options.showKitchenNotice === true;
+    const tone = options.tone === "laranja" ? "laranja" : options.tone === "azul" ? "azul" : "";
+    const cardToneClass = tone ? ` comanda-lista-${tone}` : "";
     if (!commandas.length) {
       return `
-        <div class="card">
+        <div class="card${cardToneClass}">
           <h3>${esc(title)}</h3>
           <div class="empty" style="margin-top:0.75rem;">Sem registros de comandas para o filtro atual.</div>
         </div>
@@ -3399,7 +3434,7 @@
       .sort((a, b) => new Date(comandaUpdatedAt(b) || 0) - new Date(comandaUpdatedAt(a) || 0))
       .slice(0, limit);
     return `
-      <div class="card">
+      <div class="card${cardToneClass}">
         <h3>${esc(title)}</h3>
         <p class="note">Cada comanda fica minimizada para evitar poluicao visual.</p>
         ${ordered
@@ -3407,12 +3442,17 @@
             const validItems = (comanda.items || []).filter((i) => !i.canceled).length;
             const events = (comanda.events || []).slice(-20).reverse();
             const comandaDetailKey = detailKey(keyPrefix, comanda.id);
+            const isClosed = String(comanda.status || "") === "finalizada" || String(comanda.status || "").includes("encerrada");
+            const statusClass = isClosed ? "comanda-status-fechada" : "comanda-status-aberta";
+            const statusText = isClosed ? "Fechada" : "Aberta";
+            const kitchenNotice = !isClosed && showKitchenNotice ? comandaKitchenNotice(comanda) : null;
             return `
-              <details class="compact-details" data-persist-key="${esc(comandaDetailKey)}" style="margin-top:0.65rem;"${detailOpenAttr(comandaDetailKey)}>
+              <details class="compact-details ${statusClass}" data-persist-key="${esc(comandaDetailKey)}" style="margin-top:0.65rem;"${detailOpenAttr(comandaDetailKey)}>
                 <summary>
-                  <b>${esc(comanda.id)}</b> | ${esc(comanda.status || "aberta")} | Mesa: ${esc(comanda.table || "-")} | Cliente: ${esc(comanda.customer || "-")} | Itens: ${validItems} | Total: ${money(comandaTotal(comanda))}
+                  <b>${esc(comanda.id)}</b> | <span class="tag ${isClosed ? "status-comanda-fechada" : "status-comanda-aberta"}">${statusText}</span> | Mesa/ref: ${esc(comanda.table || "-")} | Cliente: ${esc(comanda.customer || "-")} | Itens: ${validItems} | Total: ${money(comandaTotal(comanda))}
                 </summary>
                 <div class="note" style="margin-top:0.45rem;">Atualizada em: ${formatDateTime(comandaUpdatedAt(comanda))}</div>
+                ${kitchenNotice ? `<div class="note ${kitchenNotice.tone === "pronto" ? "comanda-alerta-pronto" : "comanda-alerta-falta"}" style="margin-top:0.35rem;">${esc(kitchenNotice.text)}</div>` : ""}
                 <div class="table-wrap" style="margin-top:0.5rem;">
                   <table class="history-table">
                     <thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Detalhe</th></tr></thead>
@@ -3473,9 +3513,13 @@
     if (type === "item_add") return "Item adicionado";
     if (type === "item_cancelado") return "Item cancelado";
     if (type === "item_reduzido") return "Item reduzido";
+    if (type === "admin_item_add") return "Item adicionado pelo adm";
+    if (type === "admin_item_edit") return "Item editado pelo adm";
+    if (type === "admin_item_remove") return "Item removido pelo adm";
     if (type === "cozinha_status") return "Atualizacao da cozinha";
     if (type === "cozinha_recebido") return "Cozinha recebeu pedidos";
     if (type === "garcom_ciente_alerta") return "Garcom leu alerta";
+    if (type === "admin_comanda_edit") return "Comanda editada pelo adm";
     if (type === "funcionario_add") return "Funcionario criado";
     if (type === "funcionario_edit") return "Funcionario alterado";
     if (type === "funcionario_delete") return "Funcionario removido";
@@ -3510,37 +3554,35 @@
     const closures = state.history90;
     const closureAudit = closures.flatMap((closure) => (Array.isArray(closure.auditLog) ? closure.auditLog : []));
     const mergedAudit = dedupeAuditEvents([...currentAudit, ...closureAudit]).sort((a, b) => new Date(b.ts || 0) - new Date(a.ts || 0));
-    const displayedAudit = mergedAudit.slice(0, 1800);
+    const displayedAudit = dedupeAuditEvents([...uiState.remoteMonitorEvents, ...mergedAudit])
+      .sort((a, b) => new Date(b.ts || b.broadcastAt || 0) - new Date(a.ts || a.broadcastAt || 0))
+      .slice(0, 1800);
     const closureComandas = closures.flatMap((closure) => closure.commandas || []);
     const openComandas = dedupeComandasById(state.openComandas).sort((a, b) => new Date(comandaUpdatedAt(b) || 0) - new Date(comandaUpdatedAt(a) || 0));
     const closedCurrentComandas = dedupeComandasById(state.closedComandas).sort((a, b) => new Date(comandaUpdatedAt(b) || 0) - new Date(comandaUpdatedAt(a) || 0));
     const archivedComandas = dedupeComandasById(closureComandas).sort((a, b) => new Date(comandaUpdatedAt(b) || 0) - new Date(comandaUpdatedAt(a) || 0));
-    const compactHistoryComandas = dedupeComandasById([...openComandas, ...closedCurrentComandas, ...archivedComandas]).sort(
+    const totalComandasHistorico = dedupeComandasById([...openComandas, ...closedCurrentComandas, ...archivedComandas]).sort(
       (a, b) => new Date(comandaUpdatedAt(b) || 0) - new Date(comandaUpdatedAt(a) || 0)
-    );
+    ).length;
     const auditDetailsKey = detailKey("admin-history", "audit-day");
     const openCount = openComandas.length;
     const closedCount = closedCurrentComandas.length;
-    const archivedCount = compactHistoryComandas.length;
-    const realtimeFeed = dedupeAuditEvents([...uiState.remoteMonitorEvents, ...displayedAudit]).sort(
-      (a, b) => new Date(b.ts || b.broadcastAt || 0) - new Date(a.ts || a.broadcastAt || 0)
-    );
+    const archivedCount = totalComandasHistorico;
 
     return `
-      ${renderAdminRealtimeSimplePanel(realtimeFeed)}
       <div class="grid cols-2">
         <div class="card">
           <h3>Historico Imutavel (Atual + Fechamentos)</h3>
-          <p class="note">Eventos do caixa atual + eventos preservados nos fechamentos de caixa.</p>
+          <p class="note">Eventos em tempo real + eventos preservados nos fechamentos de caixa.</p>
           <p class="note" style="margin-top:0.25rem;">Comandas abertas agora: <b>${openCount}</b> | Comandas fechadas no caixa atual: <b>${closedCount}</b> | Total de comandas no historico minimizado: <b>${archivedCount}</b></p>
           <details class="compact-details" data-persist-key="${esc(auditDetailsKey)}" style="margin-top:0.75rem;"${detailOpenAttr(auditDetailsKey)}>
-            <summary>Ver alteracoes (${displayedAudit.length})</summary>
+            <summary>Ver alteracoes em tempo real (${displayedAudit.length})</summary>
             ${displayedAudit.length
-              ? `<div class="table-wrap" style="margin-top:0.55rem;"><table class="history-table"><thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th><th>Abrir</th></tr></thead><tbody>${displayedAudit
+              ? `<div class="table-wrap" style="margin-top:0.55rem;"><table class="history-table responsive-stack"><thead><tr><th>Quando</th><th>Quem</th><th>Acao</th><th>Comanda</th><th>Resumo</th><th>Abrir</th></tr></thead><tbody>${displayedAudit
                   .map(
                     (e) =>
-                      `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName)} (${esc(e.actorRole)})</td><td>${renderEventTypeTag(e.type)}</td><td>${esc(e.comandaId || "-")}</td><td>${esc(e.detail)}</td><td>${
-                        e.comandaId ? `<button class="btn secondary" data-action="open-comanda-details" data-comanda-id="${e.comandaId}">Ver</button>` : "-"
+                      `<tr><td data-label="Quando">${formatDateTime(e.ts || e.broadcastAt)}</td><td data-label="Quem">${esc(e.actorName || "-")} (${esc(roleLabel(e.actorRole || "-"))})</td><td data-label="Acao">${esc(summarizeRealtimeAction(e))}</td><td data-label="Comanda">${esc(e.comandaId || "-")}</td><td data-label="Resumo">${esc(e.detail || "-")}</td><td data-label="Abrir">${
+                        e.comandaId ? `<button class="btn secondary compact-action" data-action="open-comanda-details" data-comanda-id="${e.comandaId}">Ver</button>` : "-"
                       }</td></tr>`
                   )
                   .join("")}</tbody></table></div>`
@@ -3551,26 +3593,23 @@
         ${renderComandaRecordsCompact(openComandas, {
           title: "Comandas abertas (caixa atual)",
           limit: 500,
-          keyPrefix: "admin-history-comandas-open"
+          keyPrefix: "admin-history-comandas-open",
+          tone: "azul",
+          showKitchenNotice: true
         })}
       </div>
       <div class="grid cols-2" style="margin-top:0.75rem;">
         ${renderComandaRecordsCompact(closedCurrentComandas, {
           title: "Comandas fechadas (caixa atual)",
           limit: 500,
-          keyPrefix: "admin-history-comandas-closed-current"
+          keyPrefix: "admin-history-comandas-closed-current",
+          tone: "laranja"
         })}
         ${renderComandaRecordsCompact(archivedComandas, {
           title: "Comandas de fechamentos anteriores",
           limit: 1200,
-          keyPrefix: "admin-history-comandas-archived"
-        })}
-      </div>
-      <div style="margin-top:0.75rem;">
-        ${renderComandaRecordsCompact(compactHistoryComandas, {
-          title: "Visao geral de todas as comandas",
-          limit: 1500,
-          keyPrefix: "admin-history-comandas"
+          keyPrefix: "admin-history-comandas-archived",
+          tone: "laranja"
         })}
       </div>
       <div class="card" style="margin-top:0.75rem;">
@@ -3771,7 +3810,15 @@
             ? `<div class="table-wrap monitor-table-wrap" style="margin-top:0.75rem;"><table class="monitor-table"><thead><tr><th>Comanda</th><th>Local</th><th>Cliente</th><th>Situacao</th><th>Atualizacao</th><th>Total</th><th>Acoes</th></tr></thead><tbody>${monitorComandas
                 .map((c) => {
                   const kitchenBadge = renderKitchenIndicatorBadge(c, true);
-                  return `<tr><td data-label="Comanda">${esc(c.id)}</td><td data-label="Local">${esc(c.table)}</td><td data-label="Cliente">${esc(c.customer || "-")}</td><td data-label="Situacao">${c.status === "finalizada" ? '<span class="tag">Finalizada</span>' : '<span class="tag">Aberta</span>'}${kitchenBadge ? `<div style="margin-top:0.3rem;">${kitchenBadge}</div>` : ""}</td><td data-label="Atualizacao">${formatDateTime(comandaUpdatedAt(c))}</td><td data-label="Total">${money(comandaTotal(c))}</td><td data-label="Acoes"><button class="btn secondary" data-action="open-comanda-details" data-comanda-id="${c.id}">Ver</button></td></tr>`;
+                  const isClosed = String(c.status || "") === "finalizada" || String(c.status || "").includes("encerrada");
+                  const kitchenNotice = !isClosed ? comandaKitchenNotice(c) : null;
+                  const statusTag = isClosed
+                    ? '<span class="tag status-comanda-fechada">Fechada</span>'
+                    : '<span class="tag status-comanda-aberta">Aberta</span>';
+                  const kitchenNoticeHtml = kitchenNotice
+                    ? `<div class="note ${kitchenNotice.tone === "pronto" ? "comanda-alerta-pronto" : "comanda-alerta-falta"}" style="margin-top:0.3rem;">${esc(kitchenNotice.text)}</div>`
+                    : "";
+                  return `<tr><td data-label="Comanda">${esc(c.id)}</td><td data-label="Local">${esc(c.table)}</td><td data-label="Cliente">${esc(c.customer || "-")}</td><td data-label="Situacao">${statusTag}${kitchenBadge ? `<div style="margin-top:0.3rem;">${kitchenBadge}</div>` : ""}${kitchenNoticeHtml}</td><td data-label="Atualizacao">${formatDateTime(comandaUpdatedAt(c))}</td><td data-label="Total">${money(comandaTotal(c))}</td><td data-label="Acoes"><button class="btn secondary" data-action="open-comanda-details" data-comanda-id="${c.id}">Ver</button></td></tr>`;
                 })
                 .join("")}</tbody></table></div>`
             : `<div class="empty" style="margin-top:0.75rem;">Sem comandas para o filtro escolhido.</div>`}
@@ -3792,7 +3839,8 @@
         ${renderComandaRecordsCompact(monitorComandas, {
           title: "Registros por Comanda (Minimizados)",
           limit: 70,
-          keyPrefix: "admin-monitor-comandas"
+          keyPrefix: "admin-monitor-comandas",
+          showKitchenNotice: true
         })}
       </div>
     `;
@@ -5252,13 +5300,16 @@
     return errors;
   }
 
-  function appendDraftItemToComanda(comanda, actor, draft) {
+  function appendDraftItemToComanda(comanda, actor, draft, options = {}) {
     const product = state.products.find((p) => p.id === draft.productId && p.category === draft.category);
     if (!product) return null;
-
-    product.stock -= Number(draft.qty || 0);
-    const waitingBefore = totalKitchenQueueMs();
+    const adjustStock = options.adjustStock !== false;
     const qty = Number(draft.qty || 0);
+    if (adjustStock) {
+      product.stock -= qty;
+    }
+
+    const waitingBefore = totalKitchenQueueMs();
 
     const item = {
       id: `IT-${String(state.seq.item++).padStart(5, "0")}`,
@@ -5308,10 +5359,15 @@
     comanda.items.push(item);
     const kitchenInfo = itemNeedsKitchen(item) ? ` Tempo estimado: ${Math.ceil((waitingBefore + item.prepTimeAtSale * qty * 60000) / 60000)} min.` : "";
     const deliveryInfo = item.deliveryRequested ? ` Entrega para ${item.deliveryRecipient} em ${item.deliveryLocation}.` : "";
+    const eventType = String(options.eventType || "item_add");
+    const eventDetail =
+      typeof options.eventDetail === "string" && options.eventDetail.trim()
+        ? options.eventDetail.trim()
+        : `Item ${item.name} x${qty} adicionado.${kitchenInfo}${deliveryInfo}`;
     appendComandaEvent(comanda, {
       actor,
-      type: "item_add",
-      detail: `Item ${item.name} x${qty} adicionado.${kitchenInfo}${deliveryInfo}`,
+      type: eventType,
+      detail: eventDetail,
       reason: "",
       itemId: item.id
     });
@@ -6384,6 +6440,283 @@
     render();
   }
 
+  function findComandaForAdminEdition(comandaId) {
+    const actor = currentActor();
+    if (!isAdminOrDev(actor)) {
+      alert("Somente administrador pode editar comandas por este painel.");
+      return null;
+    }
+    const comanda = findComandaForDetails(String(comandaId || ""));
+    if (!comanda) {
+      alert("Comanda nao encontrada.");
+      return null;
+    }
+    return comanda;
+  }
+
+  function isComandaInOpenList(comandaId) {
+    return state.openComandas.some((entry) => String(entry?.id || "") === String(comandaId || ""));
+  }
+
+  function resolveProductForAdminInput(rawInput) {
+    const input = String(rawInput || "").trim();
+    if (!input) return null;
+    const byId = Number(input);
+    if (Number.isFinite(byId) && byId > 0) {
+      const exactById = state.products.find((product) => Number(product.id) === byId);
+      if (exactById) return exactById;
+    }
+    const query = input.toLowerCase();
+    const exactByName = state.products.find((product) => String(product.name || "").trim().toLowerCase() === query);
+    if (exactByName) return exactByName;
+    const matches = state.products.filter((product) => String(product.name || "").toLowerCase().includes(query));
+    if (!matches.length) return null;
+    if (matches.length === 1) return matches[0];
+    const options = matches.slice(0, 8).map((product) => `${product.id} - ${product.name}`).join(" | ");
+    alert(`Foram encontrados varios produtos. Seja mais especifico.\n${options}`);
+    return null;
+  }
+
+  function adminEditComanda(comandaId) {
+    const actor = currentActor();
+    const comanda = findComandaForAdminEdition(comandaId);
+    if (!comanda) return;
+
+    const nextTableRaw = prompt("Mesa/referencia:", String(comanda.table || ""));
+    if (nextTableRaw === null) return;
+    const nextCustomerRaw = prompt("Cliente:", String(comanda.customer || ""));
+    if (nextCustomerRaw === null) return;
+    const extraNoteRaw = prompt("Observacao da edicao (opcional):", "");
+    if (extraNoteRaw === null) return;
+
+    const nextTable = String(nextTableRaw || "").trim() || String(comanda.table || "-");
+    const nextCustomer = String(nextCustomerRaw || "").trim();
+    const extraNote = String(extraNoteRaw || "").trim();
+
+    const changes = [];
+    if (String(comanda.table || "") !== nextTable) {
+      changes.push(`mesa/ref ${comanda.table || "-"} -> ${nextTable}`);
+      comanda.table = nextTable;
+    }
+    if (String(comanda.customer || "") !== nextCustomer) {
+      changes.push(`cliente ${comanda.customer || "-"} -> ${nextCustomer || "-"}`);
+      comanda.customer = nextCustomer;
+    }
+    if (extraNote) {
+      comanda.notes = Array.isArray(comanda.notes) ? comanda.notes : [];
+      comanda.notes.push(`Edicao adm: ${extraNote}`);
+      changes.push(`obs: ${extraNote}`);
+    }
+
+    if (!changes.length) {
+      alert("Nenhuma alteracao informada.");
+      return;
+    }
+
+    appendComandaEvent(comanda, {
+      actor,
+      type: "admin_comanda_edit",
+      detail: `Comanda editada pelo adm. ${changes.join(" | ")}.`
+    });
+
+    saveState();
+    render();
+  }
+
+  function adminAddComandaItem(comandaId) {
+    const actor = currentActor();
+    const comanda = findComandaForAdminEdition(comandaId);
+    if (!comanda) return;
+    if (!state.products.length) {
+      alert("Nao ha produtos cadastrados para adicionar.");
+      return;
+    }
+
+    const productHint = state.products
+      .slice(0, 8)
+      .map((product) => `${product.id}-${product.name}`)
+      .join(" | ");
+    const productInput = prompt(`Produto por codigo ou nome.\nEx.: ${productHint}`);
+    if (productInput === null) return;
+    const product = resolveProductForAdminInput(productInput);
+    if (!product) {
+      alert("Produto nao encontrado.");
+      return;
+    }
+
+    const qtyInput = prompt("Quantidade:", "1");
+    if (qtyInput === null) return;
+    const qty = Math.max(1, Math.floor(Number(qtyInput || 1)));
+    if (!Number.isFinite(qty) || qty <= 0) {
+      alert("Quantidade invalida.");
+      return;
+    }
+
+    const noteInput = prompt("Observacao do item (opcional):", "");
+    if (noteInput === null) return;
+    const waiterNote = String(noteInput || "").trim();
+
+    const isOpenComanda = isComandaInOpenList(comanda.id);
+    if (isOpenComanda && Number(product.stock || 0) < qty) {
+      alert(`Estoque insuficiente para ${product.name}. Disponivel: ${product.stock}.`);
+      return;
+    }
+
+    const draft = {
+      category: product.category,
+      productId: product.id,
+      qty,
+      waiterNote,
+      needsKitchen: productNeedsKitchen(product),
+      isDelivery: false,
+      deliveryRecipient: "",
+      deliveryLocation: ""
+    };
+
+    const stockInfo = isOpenComanda ? "" : " Estoque nao foi alterado (comanda fechada/historica).";
+    const createdItem = appendDraftItemToComanda(comanda, actor, draft, {
+      adjustStock: isOpenComanda,
+      eventType: "admin_item_add",
+      eventDetail: `Item ${product.name} x${qty} adicionado pelo adm.${stockInfo}`
+    });
+
+    if (!createdItem) {
+      alert("Nao foi possivel adicionar o item.");
+      return;
+    }
+
+    if (!isOpenComanda) {
+      createdItem.kitchenAlertUnread = false;
+      if (itemNeedsKitchen(createdItem)) {
+        createdItem.kitchenStatus = "entregue";
+        createdItem.kitchenStatusAt = isoNow();
+      }
+      createdItem.delivered = true;
+      createdItem.deliveredAt = isoNow();
+      comanda.kitchenAlertUnread = false;
+    }
+
+    saveState();
+    render();
+  }
+
+  function adminEditComandaItem(comandaId, itemId) {
+    const actor = currentActor();
+    const comanda = findComandaForAdminEdition(comandaId);
+    if (!comanda) return;
+    const item = (comanda.items || []).find((entry) => String(entry.id || "") === String(itemId || ""));
+    if (!item) {
+      alert("Item nao encontrado.");
+      return;
+    }
+
+    const nextNameRaw = prompt("Nome do item:", String(item.name || ""));
+    if (nextNameRaw === null) return;
+    const nextQtyRaw = prompt("Quantidade:", String(item.qty || 1));
+    if (nextQtyRaw === null) return;
+    const nextPriceRaw = prompt("Preco unitario:", String(item.priceAtSale || 0));
+    if (nextPriceRaw === null) return;
+    const nextNoteRaw = prompt("Observacao:", String(item.waiterNote || ""));
+    if (nextNoteRaw === null) return;
+
+    const nextName = String(nextNameRaw || "").trim() || String(item.name || "");
+    const nextQty = Math.max(1, Math.floor(Number(nextQtyRaw || 1)));
+    const nextPrice = Math.max(0, parseNumber(nextPriceRaw));
+    const nextNote = String(nextNoteRaw || "").trim();
+    if (!Number.isFinite(nextQty) || nextQty <= 0) {
+      alert("Quantidade invalida.");
+      return;
+    }
+
+    const prevName = String(item.name || "");
+    const prevQty = Number(item.qty || 0);
+    const prevPrice = Number(item.priceAtSale || 0);
+    const prevNote = String(item.waiterNote || "");
+    const isOpenComanda = isComandaInOpenList(comanda.id);
+    const stockChanges = [];
+    const product = state.products.find((entry) => Number(entry.id) === Number(item.productId));
+    const qtyDelta = nextQty - prevQty;
+
+    if (isOpenComanda && product && qtyDelta !== 0) {
+      if (qtyDelta > 0) {
+        if (Number(product.stock || 0) < qtyDelta) {
+          alert(`Estoque insuficiente para aumentar ${qtyDelta} unidade(s) de ${product.name}. Disponivel: ${product.stock}.`);
+          return;
+        }
+        product.stock -= qtyDelta;
+        stockChanges.push(`estoque -${qtyDelta}`);
+      } else {
+        const restore = Math.abs(qtyDelta);
+        product.stock += restore;
+        stockChanges.push(`estoque +${restore}`);
+      }
+    }
+
+    item.name = nextName;
+    item.qty = nextQty;
+    item.priceAtSale = nextPrice;
+    item.waiterNote = nextNote;
+    item.lastIncrementAt = isoNow();
+
+    const changes = [];
+    if (prevName !== nextName) changes.push(`nome ${prevName || "-"} -> ${nextName || "-"}`);
+    if (prevQty !== nextQty) changes.push(`qtd ${prevQty} -> ${nextQty}`);
+    if (prevPrice !== nextPrice) changes.push(`preco ${money(prevPrice)} -> ${money(nextPrice)}`);
+    if (prevNote !== nextNote) changes.push(`obs ${prevNote || "-"} -> ${nextNote || "-"}`);
+    if (stockChanges.length) changes.push(stockChanges.join(", "));
+
+    if (!changes.length) {
+      alert("Nenhuma alteracao informada.");
+      return;
+    }
+
+    appendComandaEvent(comanda, {
+      actor,
+      type: "admin_item_edit",
+      detail: `Item ${item.name} editado pelo adm. ${changes.join(" | ")}.`,
+      itemId: item.id
+    });
+
+    saveState();
+    render();
+  }
+
+  function adminRemoveComandaItem(comandaId, itemId) {
+    const actor = currentActor();
+    const comanda = findComandaForAdminEdition(comandaId);
+    if (!comanda) return;
+    const item = (comanda.items || []).find((entry) => String(entry.id || "") === String(itemId || ""));
+    if (!item) {
+      alert("Item nao encontrado.");
+      return;
+    }
+    if (!confirm(`Remover item ${item.name} da comanda ${comanda.id}?`)) return;
+
+    const isOpenComanda = isComandaInOpenList(comanda.id);
+    const qty = Math.max(0, Number(item.qty || 0));
+    const product = state.products.find((entry) => Number(entry.id) === Number(item.productId));
+    let stockInfo = "";
+    if (isOpenComanda && product && qty > 0) {
+      product.stock += qty;
+      stockInfo = ` Estoque devolvido: +${qty}.`;
+    } else if (!isOpenComanda) {
+      stockInfo = " Estoque nao foi alterado (comanda fechada/historica).";
+    }
+
+    comanda.items = (comanda.items || []).filter((entry) => String(entry.id || "") !== String(itemId || ""));
+    comanda.kitchenAlertUnread = kitchenAlertCount(comanda) > 0;
+
+    appendComandaEvent(comanda, {
+      actor,
+      type: "admin_item_remove",
+      detail: `Item ${item.name} x${qty} removido pelo adm.${stockInfo}`,
+      itemId: item.id
+    });
+
+    saveState();
+    render();
+  }
+
   function toggleFinalize(comandaId) {
     uiState.finalizeOpenByComanda[comandaId] = !uiState.finalizeOpenByComanda[comandaId];
     const comanda = findOpenComandaForActor(comandaId, currentActor(), { silent: true });
@@ -7108,17 +7441,37 @@
       return;
     }
 
+    if (action === "admin-edit-comanda") {
+      adminEditComanda(button.dataset.comandaId);
+      return;
+    }
+
+    if (action === "admin-add-comanda-item") {
+      adminAddComandaItem(button.dataset.comandaId);
+      return;
+    }
+
+    if (action === "admin-edit-comanda-item") {
+      adminEditComandaItem(button.dataset.comandaId, button.dataset.itemId);
+      return;
+    }
+
+    if (action === "admin-remove-comanda-item") {
+      adminRemoveComandaItem(button.dataset.comandaId, button.dataset.itemId);
+      return;
+    }
+
     if (action === "open-comanda-details") {
       uiState.comandaDetailsId = button.dataset.comandaId;
       render();
       return;
     }
 
-      if (action === "close-comanda-details") {
-        uiState.comandaDetailsId = null;
-        render();
-        return;
-      }
+    if (action === "close-comanda-details") {
+      uiState.comandaDetailsId = null;
+      render();
+      return;
+    }
     } catch (err) {
       reportUiRuntimeError("click", err);
       render();

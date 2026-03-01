@@ -1093,6 +1093,16 @@ th {
   background: #101521;
 }
 
+.card.comanda-lista-azul {
+  border-color: #2b5f99;
+  background: linear-gradient(180deg, #111b2f 0%, #0e1729 100%);
+}
+
+.card.comanda-lista-laranja {
+  border-color: #8d5f2a;
+  background: linear-gradient(180deg, #22170d 0%, #1a130c 100%);
+}
+
 .detail-header {
   display: flex;
   justify-content: space-between;
@@ -1115,6 +1125,56 @@ th {
 
 .compact-details[open] {
   background: #141b28;
+}
+
+.compact-details.comanda-status-aberta {
+  border-color: #2b5f99;
+  background: #121e33;
+}
+
+.compact-details.comanda-status-aberta[open] {
+  background: #15253e;
+}
+
+.compact-details.comanda-status-fechada {
+  border-color: #8d5f2a;
+  background: #24190f;
+}
+
+.compact-details.comanda-status-fechada[open] {
+  background: #2a1d12;
+}
+
+.tag.status-comanda-aberta {
+  border-color: #2d9cff;
+  background: #16345e;
+  color: #a7d4ff;
+}
+
+.tag.status-comanda-fechada {
+  border-color: #e29a3b;
+  background: #5a3a16;
+  color: #ffd39a;
+}
+
+.note.comanda-alerta-pronto {
+  border: 1px solid #2f7e4f;
+  border-radius: 8px;
+  padding: 0.3rem 0.45rem;
+  color: #8ff0ae;
+  background: rgba(20, 55, 33, 0.62);
+}
+
+.note.comanda-alerta-falta {
+  border: 1px solid #923b49;
+  border-radius: 8px;
+  padding: 0.3rem 0.45rem;
+  color: #ff9ea9;
+  background: rgba(64, 21, 30, 0.62);
+}
+
+.admin-item-actions {
+  gap: 0.35rem;
 }
 
 .history-table tbody tr:nth-child(odd) {
