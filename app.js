@@ -3651,6 +3651,7 @@
       <div class="card${cardToneClass}">
         <h3>${esc(title)}</h3>
         <p class="note">Cada comanda fica minimizada para evitar poluicao visual.</p>
+        ${options.headerHtml ? options.headerHtml : ""}
         ${ordered
         .map((comanda) => {
           const validItems = (comanda.items || []).filter((i) => !i.canceled).length;
@@ -3827,16 +3828,18 @@
           </details>
           ${renderComandaDetailsBox()}
         </div>
-        <div class="field" style="margin-bottom:1rem;">
-          <label>Buscar comanda (numero, mesa ou referencia)</label>
-          <input data-role="admin-history-comanda-search" value="${esc(uiState.adminHistoryComandaSearch)}" placeholder="Ex.: CMD-0005, mesa 7, joana..." />
-        </div>
         ${renderComandaRecordsCompact(openComandas.filter(c => !historyComandaSearch || matchesComandaSearch(c, historyComandaSearch)), {
           title: "Comandas abertas (caixa atual)",
           limit: 500,
           keyPrefix: "admin-history-comandas-open",
           tone: "azul",
-          showKitchenNotice: true
+          showKitchenNotice: true,
+          headerHtml: `
+            <div class="field" style="margin-top:0.75rem; margin-bottom:0.25rem;">
+              <label>Buscar comanda nestas listas (numero, mesa ou referencia)</label>
+              <input data-role="admin-history-comanda-search" value="${esc(uiState.adminHistoryComandaSearch)}" placeholder="Ex.: CMD-0005, mesa 7, joana..." />
+            </div>
+          `
         })}
       </div>
       <div style="margin-top:0.75rem;">
