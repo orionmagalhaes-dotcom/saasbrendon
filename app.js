@@ -2434,7 +2434,6 @@
             <button class="btn secondary" data-action="set-tab" data-role="admin" data-tab="funcionarios">Funcionarios</button>
             <button class="btn secondary" data-action="set-tab" data-role="admin" data-tab="avulsa">Venda Avulsa</button>
             <button class="btn secondary" data-action="set-tab" data-role="admin" data-tab="financeiro">Estoque e Financas</button>
-            <button class="btn secondary" data-action="set-tab" data-role="admin" data-tab="monitor">Monitor em Tempo Real</button>
           </div>
         </div>
       </div>
@@ -3529,24 +3528,6 @@
     if (type === "caixa_fechado") return "Caixa fechado";
     if (type === "caixa_novo") return "Novo caixa aberto";
     return eventTypeLabel(type);
-  }
-
-  function renderAdminRealtimeSimplePanel(events = []) {
-    const rows = events.slice(0, 60);
-    return `
-      <div class="card">
-        <h3>Alteracoes em tempo real</h3>
-        <p class="note">Leitura simplificada para computador e celular.</p>
-        ${rows.length
-          ? `<div class="table-wrap" style="margin-top:0.7rem;"><table class="responsive-stack history-table"><thead><tr><th>Quando</th><th>Quem</th><th>Acao</th><th>Comanda</th><th>Resumo</th></tr></thead><tbody>${rows
-              .map(
-                (event) =>
-                  `<tr><td data-label="Quando">${formatDateTime(event.ts || event.broadcastAt)}</td><td data-label="Quem">${esc(event.actorName || "-")} (${esc(roleLabel(event.actorRole || "-"))})</td><td data-label="Acao">${esc(summarizeRealtimeAction(event))}</td><td data-label="Comanda">${esc(event.comandaId || "-")}</td><td data-label="Resumo">${esc(event.detail || "-")}</td></tr>`
-              )
-              .join("")}</tbody></table></div>`
-          : `<div class="empty" style="margin-top:0.75rem;">Sem alteracoes recentes.</div>`}
-      </div>
-    `;
   }
 
   function renderAdminHistory() {
