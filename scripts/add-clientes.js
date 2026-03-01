@@ -81,6 +81,7 @@ async function main() {
         comandaId: "Avulso",
         customerName: "Wellys",
         total: 12,
+        status: "pendente",
         createdAt: createdAt,
         paidAt: null,
         paidMethod: ""
@@ -92,6 +93,7 @@ async function main() {
         comandaId: "Avulso",
         customerName: "xanato",
         total: 50,
+        status: "pendente",
         createdAt: createdAt,
         paidAt: null,
         paidMethod: ""
