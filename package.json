@@ -5,6 +5,7 @@
   "description": "Sistema de controle para restaurante/bar (PWA)",
   "scripts": {
     "dev": "node scripts/dev-server.js",
-    "build": "node scripts/build-static.js"
+    "build": "node scripts/build-static.js",
+    "seed:test-comandas": "node scripts/create-test-comandas.js"
   }
 }
