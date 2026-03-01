@@ -1,4 +1,4 @@
-const CACHE_NAME = "restobar-cache-v14";
+const CACHE_NAME = "restobar-cache-v15";
 const ASSETS = [
   "./",
   "./index.html",
@@ -84,7 +84,9 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   if (request.mode === "navigate") {
-    event.respondWith(fetch(request).catch(() => caches.match("./index.html")));
+    event.respondWith(
+      fetch(request).catch(() => caches.match("./index.html").then((cached) => cached || Response.error()))
+    );
     return;
   }
   if (!isCacheableStaticRequest(request)) return;
