@@ -563,6 +563,81 @@
     });
   }
 
+  function normalizeOperationalResetAt(value) {
+    if (typeof value !== "string") return "";
+    const trimmed = value.trim();
+    if (!trimmed) return "";
+    const ts = parseUpdatedAtTimestamp(trimmed);
+    return ts ? new Date(ts).toISOString() : "";
+  }
+
+  function selectLatestOperationalResetAt(...values) {
+    let best = "";
+    let bestTs = 0;
+    for (const value of values) {
+      const normalized = normalizeOperationalResetAt(value);
+      if (!normalized) continue;
+      const ts = parseUpdatedAtTimestamp(normalized);
+      if (!ts || ts <= bestTs) continue;
+      bestTs = ts;
+      best = normalized;
+    }
+    return best;
+  }
+
+  function applyOperationalResetCutoff(targetState, cutoffIso) {
+    if (!targetState || typeof targetState !== "object") return;
+    const normalizedCutoff = normalizeOperationalResetAt(cutoffIso);
+    if (!normalizedCutoff) return;
+    const cutoffMs = parseUpdatedAtTimestamp(normalizedCutoff);
+    if (!cutoffMs) return;
+
+    const tsAtOrAfterCutoff = (value) => {
+      const ts = parseUpdatedAtTimestamp(value);
+      return ts && ts >= cutoffMs;
+    };
+
+    const filterComandaRows = (rows) =>
+      (Array.isArray(rows) ? rows : [])
+        .map((comanda) => {
+          const copy = { ...comanda };
+          const events = (Array.isArray(copy.events) ? copy.events : []).filter((event) => tsAtOrAfterCutoff(event?.ts));
+          copy.events = events;
+          const latestEventTs = Math.max(0, ...events.map((event) => parseUpdatedAtTimestamp(event?.ts)));
+          const createdTs = parseUpdatedAtTimestamp(copy.createdAt);
+          const closedTs = parseUpdatedAtTimestamp(copy.closedAt);
+          const keep = createdTs >= cutoffMs || closedTs >= cutoffMs || latestEventTs >= cutoffMs;
+          return keep ? copy : null;
+        })
+        .filter(Boolean);
+
+    targetState.openComandas = filterComandaRows(targetState.openComandas);
+    targetState.closedComandas = filterComandaRows(targetState.closedComandas);
+
+    targetState.history90 = (Array.isArray(targetState.history90) ? targetState.history90 : [])
+      .map((entry) => {
+        const copy = { ...entry };
+        copy.commandas = filterComandaRows(copy.commandas);
+        copy.auditLog = (Array.isArray(copy.auditLog) ? copy.auditLog : []).filter((event) => tsAtOrAfterCutoff(event?.ts));
+        const closureTs = parseUpdatedAtTimestamp(copy.closedAt || copy.createdAt || copy.updatedAt);
+        const keep = closureTs >= cutoffMs || copy.commandas.length > 0 || copy.auditLog.length > 0;
+        return keep ? copy : null;
+      })
+      .filter(Boolean);
+
+    targetState.auditLog = (Array.isArray(targetState.auditLog) ? targetState.auditLog : []).filter((event) => tsAtOrAfterCutoff(event?.ts));
+    targetState.payables = (Array.isArray(targetState.payables) ? targetState.payables : []).filter((row) => tsAtOrAfterCutoff(row?.paidAt || row?.createdAt));
+    targetState.cookHistory = (Array.isArray(targetState.cookHistory) ? targetState.cookHistory : []).filter((row) =>
+      tsAtOrAfterCutoff(row?.updatedAt || row?.deliveredAt)
+    );
+    targetState.cashHtmlReports = (Array.isArray(targetState.cashHtmlReports) ? targetState.cashHtmlReports : []).filter((row) =>
+      tsAtOrAfterCutoff(row?.closedAt || row?.createdAt)
+    );
+
+    targetState.meta = targetState.meta || {};
+    targetState.meta.operationalResetAt = normalizedCutoff;
+  }
+
   function stateFootprint(source) {
     const users = Array.isArray(source?.users) ? source.users.length : 0;
     const products = Array.isArray(source?.products) ? source.products.length : 0;
@@ -608,6 +683,7 @@
     if (preferLocal && shouldForceRemotePreference(localState, remoteState)) {
       preferLocal = false;
     }
+    const operationalResetAt = selectLatestOperationalResetAt(localMeta.operationalResetAt, remoteMeta.operationalResetAt);
     const catalogBackups = mergeCatalogBackups(localMeta[CATALOG_BACKUPS_META_KEY], remoteMeta[CATALOG_BACKUPS_META_KEY]);
     const deletedProductIdsRaw = normalizeDeletedIdList([
       ...(Array.isArray(localMeta.deletedProductIds) ? localMeta.deletedProductIds : []),
@@ -675,10 +751,12 @@
         ...(preferLocal ? localState?.meta || {} : remoteState?.meta || {}),
         [CATALOG_BACKUPS_META_KEY]: catalogBackups,
         deletedProductIds,
-        deletedUserIds
+        deletedUserIds,
+        operationalResetAt
       },
       cash: { ...(preferLocal ? remoteState?.cash || {} : localState?.cash || {}), ...(preferLocal ? localState?.cash || {} : remoteState?.cash || {}) }
     };
+    applyOperationalResetCutoff(merged, operationalResetAt);
     merged.seq = merged.seq || {};
     const maxUserId = Math.max(0, ...(Array.isArray(merged.users) ? merged.users : []).map((u) => Number(u?.id || 0)));
     const maxProductId = Math.max(0, ...(Array.isArray(merged.products) ? merged.products : []).map((p) => Number(p?.id || 0)));
@@ -733,6 +811,7 @@
         lastCloudSyncAt: null,
         deletedProductIds: [],
         deletedUserIds: [],
+        operationalResetAt: "",
         [FINAL_CLIENT_PREP_FLAG]: true,
         [FINAL_CLIENT_PREP_MARKER]: isoNow(),
         [FINAL_CLIENT_PREP_SIGNATURE_KEY]: FINAL_CLIENT_PREP_SIGNATURE
@@ -1218,6 +1297,7 @@
         [CATALOG_BACKUPS_META_KEY]: normalizeCatalogBackups(parsed.meta?.[CATALOG_BACKUPS_META_KEY]),
         deletedProductIds: deletedProductIdsRaw,
         deletedUserIds: deletedUserIdsRaw,
+        operationalResetAt: normalizeOperationalResetAt(parsed.meta?.operationalResetAt),
         [FINAL_CLIENT_PREP_FLAG]: parsed.meta?.[FINAL_CLIENT_PREP_FLAG] === true,
         [FINAL_CLIENT_PREP_MARKER]:
           typeof parsed.meta?.[FINAL_CLIENT_PREP_MARKER] === "string" && parsed.meta?.[FINAL_CLIENT_PREP_MARKER]
@@ -1243,6 +1323,7 @@
     applyEduardoCredentialRecovery(recovered);
     purgeSystemTestArtifacts(recovered);
     applyFinalClientPreparation(recovered);
+    applyOperationalResetCutoff(recovered, recovered.meta?.operationalResetAt);
     ensureCatalogBackup(recovered, "normalize");
     pruneHistory(recovered);
     prunePayables(recovered);
