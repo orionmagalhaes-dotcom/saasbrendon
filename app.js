@@ -3400,9 +3400,8 @@
         return `<tr><td>${esc(item.name)}</td><td>${item.qty}</td><td>${money(item.priceAtSale)}</td><td>${itemStatus}</td><td>${esc(item.waiterNote || "-")}${item.deliveryRequested ? ` | Entrega: ${esc(item.deliveryRecipient || "-")} @ ${esc(item.deliveryLocation || "-")}` : ""}</td>${adminActions}</tr>`;
       })
       .join("");
-    const events = (comanda.events || [])
-      .slice(-40)
-      .reverse()
+    const comandaEvents = (comanda.events || []).slice(-40).reverse();
+    const events = comandaEvents
       .map((e) => `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName)}</td><td>${renderEventTypeTag(e.type)}</td><td>${esc(e.detail)}</td></tr>`)
       .join("");
 
@@ -3427,12 +3426,15 @@
             <tbody>${rows || `<tr><td colspan="${showAdminControls ? 6 : 5}">Sem itens.</td></tr>`}</tbody>
           </table>
         </div>
-        <div class="table-wrap" style="margin-top:0.5rem;">
-          <table class="history-table">
-            <thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Detalhe</th></tr></thead>
-            <tbody>${events || `<tr><td colspan="4">Sem eventos.</td></tr>`}</tbody>
-          </table>
-        </div>
+        <details class="compact-details" style="margin-top:0.5rem;">
+          <summary>Acoes da comanda (${comandaEvents.length})</summary>
+          <div class="table-wrap" style="margin-top:0.5rem;">
+            <table class="history-table">
+              <thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Detalhe</th></tr></thead>
+              <tbody>${events || `<tr><td colspan="4">Sem eventos.</td></tr>`}</tbody>
+            </table>
+          </div>
+        </details>
       </div>
     `;
   }
@@ -3460,6 +3462,8 @@
     const title = options.title || "Registros por Comanda";
     const keyPrefix = detailKey("comanda-records", options.keyPrefix || title);
     const showKitchenNotice = options.showKitchenNotice === true;
+    const viewer = getCurrentUser();
+    const showAdminInlineEdit = isAdminOrDev(viewer);
     const tone = options.tone === "laranja" ? "laranja" : options.tone === "azul" ? "azul" : "";
     const cardToneClass = tone ? ` comanda-lista-${tone}` : "";
     if (!commandas.length) {
@@ -3484,9 +3488,25 @@
             const events = (comanda.events || []).slice(-20).reverse();
             const comandaDetailKey = detailKey(keyPrefix, comanda.id);
             const isClosed = String(comanda.status || "") === "finalizada" || String(comanda.status || "").includes("encerrada");
+            const isOpenComanda = state.openComandas.some((entry) => String(entry?.id || "") === String(comanda.id || ""));
             const statusClass = isClosed ? "comanda-status-fechada" : "comanda-status-aberta";
             const statusText = isClosed ? "Fechada" : "Aberta";
             const kitchenNotice = !isClosed && showKitchenNotice ? comandaKitchenNotice(comanda) : null;
+            const inlineAdminRows = showAdminInlineEdit
+              ? (comanda.items || [])
+                  .map((item) => {
+                    const itemStatus =
+                      itemNeedsKitchen(item) && !item.canceled
+                        ? `${esc(kitchenStatusLabel(item.kitchenStatus || "fila"))} | ${esc(kitchenPriorityLabel(item.kitchenPriority || "normal"))}`
+                        : item.canceled
+                          ? "Cancelado"
+                          : item.delivered
+                            ? "Entregue"
+                            : "Pendente";
+                    return `<tr><td>${esc(item.name)}</td><td>${item.qty}</td><td>${money(item.priceAtSale)}</td><td>${itemStatus}</td><td>${esc(item.waiterNote || "-")}${item.deliveryRequested ? ` | Entrega: ${esc(item.deliveryRecipient || "-")} @ ${esc(item.deliveryLocation || "-")}` : ""}</td><td><div class="actions admin-item-actions"><button class="btn secondary compact-action" data-action="admin-edit-comanda-item" data-comanda-id="${esc(comanda.id)}" data-item-id="${esc(item.id)}">Editar</button><button class="btn danger compact-action" data-action="admin-remove-comanda-item" data-comanda-id="${esc(comanda.id)}" data-item-id="${esc(item.id)}">Remover</button></div></td></tr>`;
+                  })
+                  .join("")
+              : "";
             return `
               <details class="compact-details ${statusClass}" data-persist-key="${esc(comandaDetailKey)}" style="margin-top:0.65rem;"${detailOpenAttr(comandaDetailKey)}>
                 <summary>
@@ -3494,6 +3514,11 @@
                 </summary>
                 <div class="note" style="margin-top:0.45rem;">Atualizada em: ${formatDateTime(comandaUpdatedAt(comanda))}</div>
                 ${kitchenNotice ? `<div class="note ${kitchenNotice.tone === "pronto" ? "comanda-alerta-pronto" : "comanda-alerta-falta"}" style="margin-top:0.35rem;">${esc(kitchenNotice.text)}</div>` : ""}
+                ${
+                  showAdminInlineEdit
+                    ? `<div class="actions" style="margin-top:0.5rem;"><button class="btn secondary" data-action="admin-edit-comanda" data-comanda-id="${esc(comanda.id)}">Editar dados da comanda</button><button class="btn ok" data-action="admin-add-comanda-item" data-comanda-id="${esc(comanda.id)}">Adicionar item pelo adm</button></div><p class="note" style="margin-top:0.35rem;">Edicao pronta no card expandido. Registros: adicionado pelo adm, editado pelo adm e removido pelo adm.${isOpenComanda ? "" : " Comanda fechada/historica: estoque nao e ajustado."}</p><div class="table-wrap" style="margin-top:0.5rem;"><table><thead><tr><th>Produto</th><th>Qtd</th><th>Unit.</th><th>Status</th><th>Obs</th><th>Acoes adm</th></tr></thead><tbody>${inlineAdminRows || `<tr><td colspan="6">Sem itens.</td></tr>`}</tbody></table></div>`
+                    : ""
+                }
                 <div class="table-wrap" style="margin-top:0.5rem;">
                   <table class="history-table">
                     <thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Detalhe</th></tr></thead>
@@ -3504,9 +3529,11 @@
                     </tbody>
                   </table>
                 </div>
-                <div class="actions" style="margin-top:0.5rem;">
-                  <button class="btn secondary" data-action="open-comanda-details" data-comanda-id="${comanda.id}">Abrir detalhe completo</button>
-                </div>
+                ${
+                  showAdminInlineEdit
+                    ? ""
+                    : `<div class="actions" style="margin-top:0.5rem;"><button class="btn secondary" data-action="open-comanda-details" data-comanda-id="${comanda.id}">Abrir detalhe completo</button></div>`
+                }
               </details>
             `;
           })
