@@ -2910,6 +2910,20 @@
         });
       })
       .join("");
+    const soldItemsMap = new Map();
+    for (const comanda of orderedCommandas) {
+      for (const item of comanda.items || []) {
+        if (!itemCountsForTotal(item)) continue;
+        const qty = Number(item.qty || 0);
+        if (!(qty > 0)) continue;
+        const name = String(item.name || "").trim() || "Item sem nome";
+        soldItemsMap.set(name, Number(soldItemsMap.get(name) || 0) + qty);
+      }
+    }
+    const soldItemRows = [...soldItemsMap.entries()]
+      .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0) || String(a[0]).localeCompare(String(b[0])))
+      .map(([name, qty]) => `<tr><td>${esc(name)}</td><td class="center">${Number(qty || 0)}</td></tr>`)
+      .join("");
 
     return `
       <html>
@@ -2978,6 +2992,14 @@
               <tbody>${itemRows || `<tr><td colspan="9">Sem itens no periodo.</td></tr>`}</tbody>
             </table>
 
+            <h2>Todos os itens vendidos (quantidade)</h2>
+            <table>
+              <thead>
+                <tr><th>Item vendido</th><th class="center">Quantidade</th></tr>
+              </thead>
+              <tbody>${soldItemRows || `<tr><td colspan="2">Sem itens vendidos no periodo.</td></tr>`}</tbody>
+            </table>
+
             <div class="footer">
               <p><b>Consolidado final de itens</b></p>
               <p>Itens vendidos: <b>${totals.soldQty}</b> | Valor dos itens vendidos: <b>${money(totals.soldValue)}</b></p>
@@ -3026,6 +3048,45 @@
     });
   }
 
+  function injectHtmlTitle(html, title) {
+    const safeTitle = esc(String(title || "Relatorio de caixa").trim() || "Relatorio de caixa");
+    const source = String(html || "").trim();
+    if (!source) return "";
+    if (/<title[\s>]/i.test(source)) {
+      return source.replace(/<title[^>]*>[\s\S]*?<\/title>/i, `<title>${safeTitle}</title>`);
+    }
+    if (/<head[^>]*>/i.test(source)) {
+      return source.replace(/<head[^>]*>/i, (match) => `${match}\n<title>${safeTitle}</title>`);
+    }
+    if (/<html[^>]*>/i.test(source)) {
+      return source.replace(/<html[^>]*>/i, (match) => `${match}\n<head><title>${safeTitle}</title></head>`);
+    }
+    return `<html><head><title>${safeTitle}</title></head><body>${source}</body></html>`;
+  }
+
+  function openCashHtmlReportPdfDownload(report, options = {}) {
+    if (!report || !String(report.html || "").trim()) {
+      alert("Relatorio indisponivel para gerar PDF.");
+      return;
+    }
+    const title = String(options.title || report.title || `Fechamento ${report.cashId || report.cashClosureId || "-"}`).trim();
+    const popup = window.open("", "_blank", "width=980,height=860");
+    if (!popup) {
+      alert("Permita pop-up para baixar o relatorio em PDF.");
+      return;
+    }
+    const htmlWithTitle = injectHtmlTitle(report.html, title);
+    popup.document.open();
+    popup.document.write(htmlWithTitle);
+    popup.document.close();
+    setTimeout(() => {
+      try {
+        popup.focus();
+        popup.print();
+      } catch (_err) {}
+    }, 320);
+  }
+
   function openStoredCashHtmlReport(reportId) {
     const report = (state.cashHtmlReports || []).find((entry) => String(entry.id) === String(reportId));
     if (!report) {
@@ -3035,6 +3096,17 @@
     openCashHtmlReportRecord(report, {
       previewTitle: report.title || `Fechamento ${report.cashId || report.cashClosureId || "-"}`,
       previewSubtitle: `Arquivo salvo em ${formatDateTimeWithDay(report.createdAt || report.closedAt || isoNow())}`
+    });
+  }
+
+  function downloadStoredCashHtmlReportPdf(reportId) {
+    const report = (state.cashHtmlReports || []).find((entry) => String(entry.id) === String(reportId));
+    if (!report) {
+      alert("Arquivo HTML de fechamento nao encontrado.");
+      return;
+    }
+    openCashHtmlReportPdfDownload(report, {
+      title: report.title || `Fechamento ${report.cashId || report.cashClosureId || "-"}`
     });
   }
 
@@ -3095,6 +3167,40 @@
       title: `Historico do dia - Caixa ${state.cash.id}`,
       subtitle: "Previa para conferencia antes do fechamento"
     });
+  }
+
+  function downloadCurrentCashHistoryPdf() {
+    const actor = currentActor();
+    if (!isAdminOrDev(actor)) {
+      alert("Apenas administrador pode baixar o historico de caixa em PDF.");
+      return;
+    }
+    const closedAt = isoNow();
+    const draft = buildCashClosureDraft(closedAt);
+    const preview = {
+      id: `PREV-${state.cash.id}-${Date.now()}`,
+      cashId: state.cash.id,
+      openedAt: state.cash.openedAt,
+      closedAt,
+      commandas: draft.commandas,
+      summary: draft.summary,
+      auditLog: state.auditLog
+    };
+    const reportOptions = {
+      printedBy: actor,
+      title: `Historico do dia - Caixa ${state.cash.id}`,
+      subtitle: "Previa para conferencia antes do fechamento"
+    };
+    const html = buildCashHistoryPrintHtml(preview, reportOptions);
+    openCashHtmlReportPdfDownload(
+      {
+        ...preview,
+        title: reportOptions.title,
+        subtitle: reportOptions.subtitle,
+        html
+      },
+      { title: reportOptions.title }
+    );
   }
 
   function printStoredCashClosure(closureId) {
@@ -3443,6 +3549,7 @@
           </form>
           <div class="actions" style="margin-top:0.75rem;">
             <button type="button" class="btn secondary" data-action="print-cash-day-history">Ver historico do dia</button>
+            <button type="button" class="btn secondary" data-action="download-cash-day-history-pdf">Baixar historico do dia (PDF)</button>
             <button type="button" class="btn secondary" data-action="set-tab" data-role="admin" data-tab="arquivos_html">Arquivos HTML salvos</button>
           </div>
           <p class="note" style="margin-top:0.35rem;">Relatorio simples: resumo do caixa, pagamentos e comandas do dia. No fechamento, o HTML do relatorio e arquivado automaticamente.</p>
@@ -3476,7 +3583,7 @@
           ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="history-table"><thead><tr><th>Arquivo</th><th>Dia referencia</th><th>Caixa</th><th>Fechado em</th><th>Salvo em</th><th>Responsavel</th><th>Acoes</th></tr></thead><tbody>${reports
               .map(
                 (report) =>
-                  `<tr><td>${esc(report.id)}</td><td>${esc(formatDate(report.closedAt || report.createdAt || isoNow()))}</td><td>${esc(report.cashId || "-")}</td><td>${esc(formatDateTimeWithDay(report.closedAt || report.createdAt))}</td><td>${esc(formatDateTimeWithDay(report.createdAt || report.closedAt))}</td><td>${esc(report.createdByName || "-")} (${esc(roleLabel(report.createdByRole || "-"))})</td><td><button class="btn secondary" data-action="open-cash-html-report" data-id="${esc(report.id)}">Abrir em nova aba</button></td></tr>`
+                  `<tr><td>${esc(report.id)}</td><td>${esc(formatDate(report.closedAt || report.createdAt || isoNow()))}</td><td>${esc(report.cashId || "-")}</td><td>${esc(formatDateTimeWithDay(report.closedAt || report.createdAt))}</td><td>${esc(formatDateTimeWithDay(report.createdAt || report.closedAt))}</td><td>${esc(report.createdByName || "-")} (${esc(roleLabel(report.createdByRole || "-"))})</td><td><div class="actions"><button class="btn secondary" data-action="open-cash-html-report" data-id="${esc(report.id)}">Abrir em nova aba</button><button class="btn secondary" data-action="download-cash-html-report-pdf" data-id="${esc(report.id)}">Baixar PDF</button></div></td></tr>`
               )
               .join("")}</tbody></table></div>`
           : `<div class="empty" style="margin-top:0.75rem;">Nenhum HTML de fechamento salvo ainda.</div>`}
@@ -6828,6 +6935,11 @@
       return;
     }
 
+    if (action === "download-cash-day-history-pdf") {
+      downloadCurrentCashHistoryPdf();
+      return;
+    }
+
     if (action === "print-cash-closure") {
       printStoredCashClosure(button.dataset.id);
       return;
@@ -6835,6 +6947,11 @@
 
     if (action === "open-cash-html-report") {
       openStoredCashHtmlReport(button.dataset.id);
+      return;
+    }
+
+    if (action === "download-cash-html-report-pdf") {
+      downloadStoredCashHtmlReportPdf(button.dataset.id);
       return;
     }
 
