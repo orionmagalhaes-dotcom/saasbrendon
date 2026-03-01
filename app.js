@@ -4183,16 +4183,6 @@
             <button class="btn primary" type="submit">Finalizar Venda Avulsa</button>
           </form>
         </div>
-        <div class="card">
-          <h3>Regras</h3>
-          <ul>
-            <li>Exige produto, quantidade e pagamento confirmado.</li>
-            <li>Itens com fluxo de cozinha entram no painel da cozinha.</li>
-            <li>Bar, Espetinhos, Avulso e Ofertas de pronta entrega finalizam como venda direta.</li>
-            <li>Baixa estoque automaticamente.</li>
-            <li>Entra no historico e nos indicadores financeiros.</li>
-          </ul>
-        </div>
       </div>
     `;
   }
