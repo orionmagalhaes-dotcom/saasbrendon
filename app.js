@@ -3809,14 +3809,14 @@
 
     return `
       <div class="grid cols-2">
-        <div class="card">
-          <h3>Eventos em tempo real</h3>
+      <div class="card">
+        <div class="field" style="margin-bottom:1rem;">
+          <label>Buscar comanda nas listas (numero, mesa ou referencia)</label>
+          <input data-role="admin-history-comanda-search" value="${esc(uiState.adminHistoryComandaSearch)}" placeholder="Ex.: CMD-0005, mesa 7, joana..." />
+        </div>
+        <h3>Eventos em tempo real</h3>
           <p class="note">Eventos em tempo real + eventos preservados nos fechamentos de caixa.</p>
           <p class="note" style="margin-top:0.25rem;">Comandas abertas agora: <b>${openCount}</b> | Comandas fechadas no caixa atual: <b>${closedCount}</b> | Total de comandas no historico minimizado: <b>${archivedCount}</b></p>
-          <div class="field" style="margin-top:0.65rem;">
-            <label>Buscar comanda (numero, mesa ou referencia)</label>
-            <input data-role="admin-history-comanda-search" value="${esc(uiState.adminHistoryComandaSearch)}" placeholder="Ex.: CMD-0005, mesa 7, joana..." />
-          </div>
           <details class="compact-details" data-persist-key="${esc(auditDetailsKey)}" style="margin-top:0.75rem;"${detailOpenAttr(auditDetailsKey)}>
             <summary>Ver alteracoes em tempo real (${displayedAudit.length})</summary>
             ${displayedAudit.length
@@ -3831,7 +3831,7 @@
           </details>
           ${renderComandaDetailsBox()}
         </div>
-        ${renderComandaRecordsCompact(openComandas, {
+        ${renderComandaRecordsCompact(openComandas.filter(c => !historyComandaSearch || matchesComandaSearch(c, historyComandaSearch)), {
           title: "Comandas abertas (caixa atual)",
           limit: 500,
           keyPrefix: "admin-history-comandas-open",
@@ -3910,7 +3910,6 @@
           <div class="actions" style="margin-top:0.75rem;">
             <button type="button" class="btn secondary" data-action="print-cash-day-history">Ver historico do dia</button>
             <button type="button" class="btn secondary" data-action="print-cash-day-history-extended">Ver historico do dia estendido</button>
-            <button type="button" class="btn secondary" data-action="set-tab" data-role="admin" data-tab="arquivos_html">Arquivos HTML salvos</button>
           </div>
           <p class="note" style="margin-top:0.35rem;">Relatorio simples: resumo do caixa, pagamentos e comandas do dia. No fechamento, o HTML do relatorio e arquivado automaticamente.</p>
         </div>
