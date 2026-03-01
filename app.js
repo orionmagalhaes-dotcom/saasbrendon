@@ -1975,7 +1975,50 @@
   }
 
   function paymentLabel(method) {
+    if (method === "multiplo") return "Multiplo";
+    if (method === "nao_finalizada") return "Nao finalizada";
     return PAYMENT_METHODS.find((p) => p.value === method)?.label || method;
+  }
+
+  function normalizePaymentSplits(splits) {
+    const validMethods = new Set(PAYMENT_METHODS.map((entry) => entry.value));
+    const byMethod = new Map();
+    for (const row of Array.isArray(splits) ? splits : []) {
+      const method = String(row?.method || "").trim();
+      if (!validMethods.has(method)) continue;
+      const amount = Math.max(0, Number(row?.amount || 0));
+      if (!(amount > 0)) continue;
+      byMethod.set(method, Number(byMethod.get(method) || 0) + amount);
+    }
+    return [...byMethod.entries()].map(([method, amount]) => ({ method, amount }));
+  }
+
+  function comandaPaymentSplits(comanda, options = {}) {
+    const fallbackTotal = Math.max(0, Number(options.totalFallback !== undefined ? options.totalFallback : comandaTotal(comanda)));
+    const payment = comanda?.payment || {};
+    const normalized = normalizePaymentSplits(payment.methods);
+    if (normalized.length) return normalized;
+    const legacyMethod = String(payment.method || "").trim();
+    if (!legacyMethod || legacyMethod === "nao_finalizada") return [];
+    if (!(fallbackTotal > 0)) return [{ method: legacyMethod, amount: 0 }];
+    return [{ method: legacyMethod, amount: fallbackTotal }];
+  }
+
+  function paymentSplitsText(splits, options = {}) {
+    const includeAmount = options.includeAmount !== false;
+    const rows = normalizePaymentSplits(splits);
+    if (!rows.length) return paymentLabel(options.emptyLabel || "nao_finalizada");
+    if (!includeAmount) {
+      if (rows.length === 1) return paymentLabel(rows[0].method);
+      return rows.map((row) => paymentLabel(row.method)).join(" + ");
+    }
+    return rows.map((row) => `${paymentLabel(row.method)} ${money(row.amount)}`).join(" + ");
+  }
+
+  function comandaPaymentText(comanda, options = {}) {
+    const splits = comandaPaymentSplits(comanda, { totalFallback: options.totalFallback });
+    if (!splits.length) return paymentLabel(options.emptyLabel || "nao_finalizada");
+    return paymentSplitsText(splits, { includeAmount: options.includeAmount !== false });
   }
 
   function roleLabel(role) {
@@ -2839,8 +2882,16 @@
     const total = commandas.reduce((sum, c) => sum + comandaTotal(c), 0);
     const byPayment = {};
     for (const c of commandas) {
-      const method = c.payment?.method || "nao_finalizada";
-      byPayment[method] = (byPayment[method] || 0) + comandaTotal(c);
+      const comandaTotalValue = comandaTotal(c);
+      const splits = comandaPaymentSplits(c, { totalFallback: comandaTotalValue });
+      if (splits.length) {
+        for (const split of splits) {
+          byPayment[split.method] = (byPayment[split.method] || 0) + Number(split.amount || 0);
+        }
+      } else {
+        const method = c.payment?.method || "nao_finalizada";
+        byPayment[method] = (byPayment[method] || 0) + comandaTotalValue;
+      }
     }
     return {
       commandasCount: commandas.length,
@@ -3024,7 +3075,7 @@
               <td>${esc(comanda.table || "-")}</td>
               <td>${esc(comanda.customer || "-")}</td>
               <td>${esc(closureStatusLabel(comanda.status))}</td>
-              <td>${esc(paymentLabel(comanda.payment?.method || "nao_finalizada"))}</td>
+              <td>${esc(comandaPaymentText(comanda, { includeAmount: true, totalFallback: comandaTotal(comanda) }))}</td>
               <td>${esc(item?.name || "-")}<br /><span class="small">Status: ${esc(cashHistoryItemStatusLabel(item))}</span></td>
               <td class="center">${qty}</td>
               <td>${esc(formatDateTime(addedAt))}</td>
@@ -3041,7 +3092,7 @@
               <td>${esc(comanda.table || "-")}</td>
               <td>${esc(comanda.customer || "-")}</td>
               <td>${esc(closureStatusLabel(comanda.status))}</td>
-              <td>${esc(paymentLabel(comanda.payment?.method || "nao_finalizada"))}</td>
+              <td>${esc(comandaPaymentText(comanda, { includeAmount: true, totalFallback: comandaTotal(comanda) }))}</td>
               <td>[Comanda] ${esc(eventLabel(event?.type))}</td>
               <td class="center">-</td>
               <td>${esc(formatDateTime(event?.ts))}</td>
@@ -3056,7 +3107,7 @@
           <td>${esc(comanda.table || "-")}</td>
           <td>${esc(comanda.customer || "-")}</td>
           <td>${esc(closureStatusLabel(comanda.status))}</td>
-          <td>${esc(paymentLabel(comanda.payment?.method || "nao_finalizada"))}</td>
+          <td>${esc(comandaPaymentText(comanda, { includeAmount: true, totalFallback: comandaTotal(comanda) }))}</td>
           <td><b>Resumo da comanda</b></td>
           <td class="center">${metrics.soldQty}</td>
           <td>${esc(formatDateTime(comanda.closedAt || comanda.createdAt))}</td>
@@ -3364,7 +3415,7 @@
         <p class="note">Mesa: ${esc(comanda.table)} | Cliente: ${esc(comanda.customer || "-")} | Status: ${esc(comanda.status || "aberta")}</p>
         ${showCreatorForAdmin ? `<p class="note">Criada por: ${esc(creatorName)}${esc(creatorRoleText)}</p>` : ""}
         <p class="note">Criada em ${formatDateTime(comanda.createdAt)} ${comanda.closedAt ? `| Fechada em ${formatDateTime(comanda.closedAt)}` : ""}</p>
-        <p class="note">Pagamento: ${esc(paymentLabel(comanda.payment?.method || "-"))} | Total: <b>${money(comandaTotal(comanda))}</b></p>
+        <p class="note">Pagamento: ${esc(comandaPaymentText(comanda, { includeAmount: true, totalFallback: comandaTotal(comanda) }))} | Total: <b>${money(comandaTotal(comanda))}</b></p>
         ${
           showAdminControls
             ? `<div class="actions" style="margin-top:0.5rem;"><button class="btn secondary" data-action="admin-edit-comanda" data-comanda-id="${esc(comanda.id)}">Editar dados da comanda</button><button class="btn ok" data-action="admin-add-comanda-item" data-comanda-id="${esc(comanda.id)}">Adicionar item pelo adm</button></div><p class="note" style="margin-top:0.35rem;">As alteracoes registram: adicionado pelo adm, editado pelo adm ou removido pelo adm.${isOpenComanda ? "" : " Comanda fechada/historica: estoque nao e ajustado."}</p>`
@@ -3570,17 +3621,11 @@
           showKitchenNotice: true
         })}
       </div>
-      <div class="grid cols-2" style="margin-top:0.75rem;">
+      <div style="margin-top:0.75rem;">
         ${renderComandaRecordsCompact(closedCurrentComandas, {
           title: "Comandas fechadas (caixa atual)",
           limit: 500,
           keyPrefix: "admin-history-comandas-closed-current",
-          tone: "laranja"
-        })}
-        ${renderComandaRecordsCompact(archivedComandas, {
-          title: "Comandas de fechamentos anteriores",
-          limit: 1200,
-          keyPrefix: "admin-history-comandas-archived",
           tone: "laranja"
         })}
       </div>
@@ -3824,7 +3869,6 @@
       { key: "abertas", label: "Comandas abertas" },
       { key: "cozinha", label: "Fila cozinha" },
       { key: "consulta", label: "Consulta precos" },
-      { key: "avulsa", label: "Venda Avulsa" },
       { key: "historico", label: "Historico" }
     ];
 
@@ -3835,9 +3879,6 @@
         break;
       case "abertas":
         content = renderWaiterOpenComandas();
-        break;
-      case "avulsa":
-        content = renderQuickSale("admin");
         break;
       case "cozinha":
         content = renderWaiterKitchen();
@@ -3863,12 +3904,14 @@
   }
 
   function renderAdmin(user) {
+    if (uiState.adminTab === "avulsa") {
+      uiState.adminTab = "dashboard";
+    }
     const tabs = [
       { key: "dashboard", label: "Dashboard" },
       { key: "comandas", label: "Comandas" },
       { key: "produtos", label: "Produtos" },
       { key: "funcionarios", label: "Funcionarios" },
-      { key: "avulsa", label: "Venda Avulsa" },
       { key: "monitor", label: "Monitor" },
       { key: "apagar", label: "A Pagar" },
       { key: "financeiro", label: "Financas" },
@@ -3885,9 +3928,6 @@
         break;
       case "funcionarios":
         content = renderAdminEmployees();
-        break;
-      case "avulsa":
-        content = renderQuickSale("admin");
         break;
       case "monitor":
         content = renderAdminMonitor();
@@ -3953,12 +3993,14 @@
   }
 
   function renderDev(user) {
+    if (uiState.devTab === "avulsa") {
+      uiState.devTab = "dashboard";
+    }
     const tabs = [
       { key: "dashboard", label: "Dashboard" },
       { key: "comandas", label: "Comandas" },
       { key: "produtos", label: "Produtos" },
       { key: "funcionarios", label: "Funcionarios" },
-      { key: "avulsa", label: "Venda Avulsa" },
       { key: "monitor", label: "Monitor" },
       { key: "devices", label: "Dispositivos" },
       { key: "apagar", label: "A Pagar" },
@@ -3977,9 +4019,6 @@
         break;
       case "funcionarios":
         content = renderAdminEmployees();
-        break;
-      case "avulsa":
-        content = renderQuickSale("admin");
         break;
       case "monitor":
         content = renderAdminMonitor();
@@ -4022,7 +4061,6 @@
         <div class="actions" style="margin-top:0.75rem;">
           <button class="btn primary" data-action="set-tab" data-role="waiter" data-tab="abrir">Abrir pedido/comanda</button>
           <button class="btn secondary" data-action="set-tab" data-role="waiter" data-tab="abertas">Comandas abertas</button>
-          <button class="btn secondary" data-action="set-tab" data-role="waiter" data-tab="avulsa">Venda Avulsa</button>
         </div>
       </div>
     `;
@@ -4049,11 +4087,15 @@
           <form id="create-comanda-form" class="form" style="margin-top:0.75rem;">
             <div class="field">
               <label>Mesa ou referencia</label>
-              <input name="table" required placeholder="Mesa 07" />
+              <input name="table" placeholder="Mesa 07" />
             </div>
             <div class="field">
               <label>Nome do cliente (opcional)</label>
               <input name="customer" placeholder="Cliente" />
+            </div>
+            <div class="field">
+              <label><input name="isAvulsa" type="checkbox" /> Marcar como venda avulsa</label>
+              <div class="note">Ao marcar, a comanda e aberta como avulsa sem exigir mesa/referencia.</div>
             </div>
             <button class="btn primary" type="submit">Criar Comanda</button>
           </form>
@@ -4191,16 +4233,52 @@
   }
 
   function renderFinalizePanel(comanda) {
+    const total = comandaTotal(comanda);
+    const totalFixed = Number(total || 0).toFixed(2);
+    const methodOptions = PAYMENT_METHODS.map((m) => `<option value="${m.value}">${m.label}</option>`).join("");
     return `
       <form class="card form" data-role="finalize-form" data-comanda-id="${comanda.id}">
         <h4>Finalizacao da comanda ${esc(comanda.id)}</h4>
-        <div class="note">Confira dados e escolha o pagamento. Em fiado, a confirmacao manual de pagamento nao e obrigatoria.</div>
-        <div class="field">
-          <label>Pagamento</label>
-          <select name="paymentMethod" data-role="payment-method">
-            ${PAYMENT_METHODS.map((m) => `<option value="${m.value}">${m.label}</option>`).join("")}
-          </select>
+        <div class="note">Confira dados e escolha uma ou mais formas de pagamento. A soma deve bater com o total da comanda.</div>
+        <div class="grid cols-2">
+          <div class="field">
+            <label>Pagamento principal</label>
+            <select name="paymentMethodPrimary" data-role="payment-method">
+              ${methodOptions}
+            </select>
+          </div>
+          <div class="field">
+            <label>Valor principal</label>
+            <input name="paymentAmountPrimary" data-role="payment-amount" value="${totalFixed}" />
+          </div>
         </div>
+        <div class="grid cols-2">
+          <div class="field">
+            <label>Pagamento complementar 1 (opcional)</label>
+            <select name="paymentMethodExtra1" data-role="payment-method">
+              <option value="">Nao usar</option>
+              ${methodOptions}
+            </select>
+          </div>
+          <div class="field">
+            <label>Valor complementar 1</label>
+            <input name="paymentAmountExtra1" data-role="payment-amount" value="0" />
+          </div>
+        </div>
+        <div class="grid cols-2">
+          <div class="field">
+            <label>Pagamento complementar 2 (opcional)</label>
+            <select name="paymentMethodExtra2" data-role="payment-method">
+              <option value="">Nao usar</option>
+              ${methodOptions}
+            </select>
+          </div>
+          <div class="field">
+            <label>Valor complementar 2</label>
+            <input name="paymentAmountExtra2" data-role="payment-amount" value="0" />
+          </div>
+        </div>
+        <div class="note" data-role="payment-breakdown-note">Divisao ainda nao conferida.</div>
         <div class="field" data-role="fiado-box" style="display:none;">
           <label>Nome do cliente (obrigatorio no fiado)</label>
           <input name="fiadoCustomer" placeholder="Nome completo" />
@@ -4216,7 +4294,7 @@
           <label><input type="checkbox" name="manualCheck" data-role="manual-check" /> Pagamento conferido manualmente com cliente</label>
           <div class="note" data-role="manual-check-note" style="display:none;">No fiado, essa confirmacao e dispensada.</div>
         </div>
-        <div class="note"><b>Valor total:</b> ${money(comandaTotal(comanda))}</div>
+        <div class="note"><b>Valor total:</b> ${money(total)}</div>
         <button class="btn ok" type="submit">Confirmar finalizacao</button>
       </form>
     `;
@@ -4775,12 +4853,14 @@
   }
 
   function renderWaiter(user) {
+    if (uiState.waiterTab === "avulsa") {
+      uiState.waiterTab = "abrir";
+    }
     const tabs = [
       { key: "abrir", label: "Abrir pedido/comanda" },
       { key: "abertas", label: "Comandas abertas" },
       { key: "cozinha", label: "Fila cozinha" },
       { key: "consulta", label: "Consulta precos" },
-      { key: "avulsa", label: "Venda Avulsa" },
       { key: "historico", label: "Historico" }
     ];
 
@@ -4791,9 +4871,6 @@
         break;
       case "abertas":
         content = renderWaiterOpenComandas();
-        break;
-      case "avulsa":
-        content = renderQuickSale("waiter");
         break;
       case "cozinha":
         content = renderWaiterKitchen();
@@ -5801,7 +5878,9 @@
 
   function createComanda(form) {
     const actor = currentActor();
-    const table = form.table.value.trim();
+    const isAvulsa = formCheckboxChecked(form, "isAvulsa", false);
+    const tableInput = form.table.value.trim();
+    const table = isAvulsa ? "Venda Avulsa" : tableInput;
     const customer = form.customer.value.trim();
 
     if (!table) {
@@ -5816,19 +5895,20 @@
       createdAt: isoNow(),
       createdBy: actor.id,
       status: "aberta",
-      notes: [],
+      notes: isAvulsa ? ["Comanda marcada como venda avulsa na abertura."] : [],
       items: [],
       events: [],
       payment: null,
       pixCodeDraft: null,
-      kitchenAlertUnread: false
+      kitchenAlertUnread: false,
+      isAvulsa: Boolean(isAvulsa)
     };
 
     state.openComandas.push(comanda);
     appendComandaEvent(comanda, {
       actor,
       type: "comanda_aberta",
-      detail: `Comanda aberta na ${table}${customer ? ` para ${customer}` : ""}.`
+      detail: `Comanda aberta na ${table}${customer ? ` para ${customer}` : ""}${isAvulsa ? " | marcada como avulsa" : ""}.`
     });
 
     uiState.waiterTab = "abrir";
@@ -6696,6 +6776,109 @@
     render();
   }
 
+  function parseFinalizePaymentSplits(form, total) {
+    const validMethods = new Set(PAYMENT_METHODS.map((entry) => entry.value));
+    const rawRows = [
+      {
+        method: String(form.paymentMethodPrimary?.value || "").trim(),
+        amountRaw: String(form.paymentAmountPrimary?.value || "0").trim(),
+        rowName: "pagamento principal"
+      },
+      {
+        method: String(form.paymentMethodExtra1?.value || "").trim(),
+        amountRaw: String(form.paymentAmountExtra1?.value || "0").trim(),
+        rowName: "pagamento complementar 1"
+      },
+      {
+        method: String(form.paymentMethodExtra2?.value || "").trim(),
+        amountRaw: String(form.paymentAmountExtra2?.value || "0").trim(),
+        rowName: "pagamento complementar 2"
+      }
+    ];
+
+    const chosenRows = [];
+    for (const row of rawRows) {
+      const amount = Math.max(0, parseNumber(row.amountRaw));
+      if (!row.method && !(amount > 0)) continue;
+      if (!row.method && amount > 0) {
+        return { error: `Informe a forma do ${row.rowName}.` };
+      }
+      if (!validMethods.has(row.method)) {
+        return { error: `Forma de pagamento invalida no ${row.rowName}.` };
+      }
+      if (!(amount > 0)) {
+        return { error: `Informe valor maior que zero para ${paymentLabel(row.method)}.` };
+      }
+      chosenRows.push({ method: row.method, amount });
+    }
+
+    if (!chosenRows.length) {
+      return { error: "Informe ao menos uma forma de pagamento." };
+    }
+
+    const splits = normalizePaymentSplits(chosenRows);
+    const totalPaid = splits.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    if (Math.abs(totalPaid - Number(total || 0)) > 0.01) {
+      return {
+        error: `A soma dos pagamentos (${money(totalPaid)}) precisa ser igual ao total da comanda (${money(total)}).`
+      };
+    }
+    return { value: splits };
+  }
+
+  function updateFinalizePaymentUi(form) {
+    if (!form) return;
+    const fiadoBox = form.querySelector('[data-role="fiado-box"]');
+    const pixBox = form.querySelector('[data-role="pix-box"]');
+    const manualCheck = form.querySelector('[data-role="manual-check"]');
+    const manualCheckNote = form.querySelector('[data-role="manual-check-note"]');
+    const breakdownNote = form.querySelector('[data-role="payment-breakdown-note"]');
+    const comandaId = String(form.dataset.comandaId || "");
+    const comanda = findOpenComanda(comandaId);
+    const total = comanda ? comandaTotal(comanda) : 0;
+    const selectedMethods = [
+      String(form.paymentMethodPrimary?.value || "").trim(),
+      String(form.paymentMethodExtra1?.value || "").trim(),
+      String(form.paymentMethodExtra2?.value || "").trim()
+    ].filter(Boolean);
+
+    const parsed = parseFinalizePaymentSplits(form, total);
+    const splits = parsed.value || [];
+    const hasFiado = selectedMethods.includes("fiado");
+    const hasPix = selectedMethods.includes("pix");
+    const hasNonFiado = selectedMethods.some((method) => method !== "fiado");
+
+    if (fiadoBox) fiadoBox.style.display = hasFiado ? "grid" : "none";
+    if (pixBox) pixBox.style.display = hasPix ? "grid" : "none";
+    if (manualCheck) {
+      manualCheck.disabled = !hasNonFiado;
+      if (!hasNonFiado) manualCheck.checked = false;
+    }
+    if (manualCheckNote) {
+      manualCheckNote.style.display = hasNonFiado ? "none" : "block";
+      manualCheckNote.textContent = hasNonFiado ? "" : "Quando a comanda e totalmente no fiado, essa confirmacao e dispensada.";
+    }
+
+    if (breakdownNote) {
+      if (parsed.error) {
+        breakdownNote.textContent = parsed.error;
+      } else {
+        const paid = splits.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+        breakdownNote.textContent = `Pagamento informado: ${paymentSplitsText(splits, { includeAmount: true })} | Total conferido: ${money(paid)}.`;
+      }
+    }
+
+    if (hasPix && comanda) {
+      if (!comanda.pixCodeDraft) {
+        comanda.pixCodeDraft = generatePixCode();
+      }
+      const codeEl = form.querySelector('[data-role="pix-code"]');
+      const canvas = form.querySelector('[data-role="pix-canvas"]');
+      if (codeEl) codeEl.textContent = comanda.pixCodeDraft;
+      if (canvas) drawPseudoQr(canvas, comanda.pixCodeDraft);
+    }
+  }
+
   function finalizeComanda(form) {
     const actor = currentActor();
     const comandaId = form.dataset.comandaId;
@@ -6705,18 +6888,25 @@
       return;
     }
 
-    const paymentMethod = form.paymentMethod.value;
     const manualCheck = formCheckboxChecked(form, "manualCheck", false);
     const fiadoCustomer = form.fiadoCustomer.value.trim();
     const total = comandaTotal(comanda);
-    const requiresManualCheck = paymentMethod !== "fiado";
+    const parsedSplits = parseFinalizePaymentSplits(form, total);
+    if (parsedSplits.error) {
+      alert(parsedSplits.error);
+      return;
+    }
+    const paymentSplits = parsedSplits.value || [];
+    const hasFiado = paymentSplits.some((row) => row.method === "fiado");
+    const hasPix = paymentSplits.some((row) => row.method === "pix");
+    const requiresManualCheck = paymentSplits.some((row) => row.method !== "fiado");
 
     if (requiresManualCheck && !manualCheck) {
       alert("Confirme manualmente o pagamento antes de finalizar.");
       return;
     }
 
-    if (paymentMethod === "fiado" && !fiadoCustomer) {
+    if (hasFiado && !fiadoCustomer) {
       alert("No fiado, o nome do cliente e obrigatorio.");
       return;
     }
@@ -6725,26 +6915,33 @@
       if (!confirm("Comanda sem itens validos. Finalizar mesmo assim?")) return;
     }
 
-    if (paymentMethod === "pix" && !comanda.pixCodeDraft) {
+    if (hasPix && !comanda.pixCodeDraft) {
       comanda.pixCodeDraft = generatePixCode();
     }
+
+    const normalizedSplits = normalizePaymentSplits(paymentSplits);
+    const paymentMethod = normalizedSplits.length === 1 ? normalizedSplits[0].method : "multiplo";
+    const fiadoAmount = normalizedSplits
+      .filter((entry) => entry.method === "fiado")
+      .reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
 
     comanda.status = "finalizada";
     comanda.closedAt = isoNow();
     comanda.payment = {
       method: paymentMethod,
-      methodLabel: paymentLabel(paymentMethod),
+      methodLabel: paymentSplitsText(normalizedSplits, { includeAmount: true }),
+      methods: normalizedSplits,
       verifiedAt: isoNow(),
-      customerName: paymentMethod === "fiado" ? fiadoCustomer : comanda.customer || "",
-      pixCode: paymentMethod === "pix" ? comanda.pixCodeDraft : ""
+      customerName: hasFiado ? fiadoCustomer : comanda.customer || "",
+      pixCode: hasPix ? comanda.pixCodeDraft : ""
     };
 
-    if (paymentMethod === "fiado") {
+    if (fiadoAmount > 0) {
       state.payables.push({
         id: `PG-${String(state.seq.payable++).padStart(5, "0")}`,
         comandaId: comanda.id,
         customerName: fiadoCustomer,
-        total,
+        total: fiadoAmount,
         status: "pendente",
         createdAt: isoNow(),
         paidAt: null,
@@ -6755,7 +6952,7 @@
     appendComandaEvent(comanda, {
       actor,
       type: "comanda_finalizada",
-      detail: `Comanda finalizada em ${paymentLabel(paymentMethod)} no valor ${money(total)}.`
+      detail: `Comanda finalizada com ${paymentSplitsText(normalizedSplits, { includeAmount: true })} no valor ${money(total)}.`
     });
 
     state.openComandas = state.openComandas.filter((c) => c.id !== comanda.id);
@@ -6774,40 +6971,7 @@
   function toggleFinalizeView(select) {
     const form = select.closest('form[data-role="finalize-form"]');
     if (!form) return;
-
-    const method = select.value;
-    const fiadoBox = form.querySelector('[data-role="fiado-box"]');
-    const pixBox = form.querySelector('[data-role="pix-box"]');
-    const manualCheck = form.querySelector('[data-role="manual-check"]');
-    const manualCheckNote = form.querySelector('[data-role="manual-check-note"]');
-    const isFiado = method === "fiado";
-
-    if (fiadoBox) fiadoBox.style.display = isFiado ? "grid" : "none";
-    if (pixBox) pixBox.style.display = method === "pix" ? "grid" : "none";
-    if (manualCheck) {
-      manualCheck.disabled = isFiado;
-      if (isFiado) {
-        manualCheck.checked = false;
-      }
-    }
-    if (manualCheckNote) {
-      manualCheckNote.style.display = isFiado ? "block" : "none";
-    }
-
-    if (method === "pix") {
-      const comandaId = form.dataset.comandaId;
-      const comanda = findOpenComanda(comandaId);
-      if (!comanda) return;
-      if (!comanda.pixCodeDraft) {
-        comanda.pixCodeDraft = generatePixCode();
-        saveState();
-      }
-
-      const codeEl = form.querySelector('[data-role="pix-code"]');
-      const canvas = form.querySelector('[data-role="pix-canvas"]');
-      if (codeEl) codeEl.textContent = comanda.pixCodeDraft;
-      if (canvas) drawPseudoQr(canvas, comanda.pixCodeDraft);
-    }
+    updateFinalizePaymentUi(form);
   }
 
   function extractBodyFromHtml(html) {
@@ -7048,7 +7212,7 @@
             <p>${lines || "Sem itens"}</p>
             <hr>
             <p>Total: <b>${money(comandaTotal(comanda))}</b></p>
-            <p>Pagamento: ${esc(paymentLabel(comanda.payment?.method || "nao finalizada"))}</p>
+            <p>Pagamento: ${esc(comandaPaymentText(comanda, { includeAmount: true, totalFallback: comandaTotal(comanda) }))}</p>
             <p>Observacoes: ${(comanda.notes || []).map((n) => esc(n)).join(" | ") || "-"}</p>
             <hr>
             <p>${PRINT_PIPELINE_ENABLED ? "Pronto para impressora de cupom." : "Visualizacao simples no navegador/PWA."}</p>
@@ -7630,6 +7794,11 @@
   app.addEventListener("input", (event) => {
     try {
       const target = event.target;
+      if (target.matches('[data-role="payment-amount"]')) {
+        const form = target.closest('form[data-role="finalize-form"]');
+        if (form) updateFinalizePaymentUi(form);
+        return;
+      }
       if (target.matches('[data-role="waiter-catalog-search"]')) {
         uiState.waiterCatalogSearch = target.value || "";
         render();
