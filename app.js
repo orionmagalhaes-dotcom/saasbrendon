@@ -697,7 +697,10 @@
     ]);
     const deletedProductIds = sanitizeDeletedProductIds(deletedProductIdsRaw, localState, remoteState);
     const deletedUserIds = sanitizeDeletedUserIds(deletedUserIdsRaw, localState, remoteState);
-    const allowRemoteOperationalInsert = !preferLocal;
+    // Dados operacionais (comandas, historico, auditoria etc.) nunca devem
+    // ser descartados apenas porque a copia local esta mais recente no "meta.updatedAt".
+    // Em cenarios concorrentes, manter "remote-only" evita sumico temporario de pedidos.
+    const allowRemoteOperationalInsert = true;
     const mergedOpenComandasRaw = mergeComandasById(localState?.openComandas, remoteState?.openComandas, {
       preferLocal,
       allowRemoteOnly: allowRemoteOperationalInsert
