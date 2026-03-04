@@ -351,15 +351,41 @@ th {
 .payables-table th,
 .payables-table td {
   vertical-align: top;
+  font-size: 0.84rem;
 }
 
 .payable-row td {
-  padding-top: 0.62rem;
-  padding-bottom: 0.62rem;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
 }
 
 .payables-table tbody tr:nth-child(odd) {
   background: rgba(22, 33, 50, 0.46);
+}
+
+.payables-table-pending th:nth-child(1),
+.payables-table-pending td:nth-child(1) {
+  width: 15%;
+}
+
+.payables-table-pending th:nth-child(2),
+.payables-table-pending td:nth-child(2) {
+  width: 28%;
+}
+
+.payables-table-pending th:nth-child(3),
+.payables-table-pending td:nth-child(3) {
+  width: 19%;
+}
+
+.payables-table-pending th:nth-child(4),
+.payables-table-pending td:nth-child(4) {
+  width: 20%;
+}
+
+.payables-table-pending th:nth-child(5),
+.payables-table-pending td:nth-child(5) {
+  width: 18%;
 }
 
 .payable-comanda-cell {
@@ -375,7 +401,7 @@ th {
 
 .payable-actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 0.34rem;
   width: 100%;
 }

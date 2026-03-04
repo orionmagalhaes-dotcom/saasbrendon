@@ -2257,6 +2257,7 @@
       fiado_ajuste_manual: "Ajuste manual no fiado",
       fiado_ajuste_produto_add: "Produto adicionado no fiado",
       fiado_ajuste_produto_remove: "Produto removido do fiado",
+      fiado_reducao_pagamento: "Reducao de fiado por pagamento",
       produto_add: "Produto criado",
       produto_edit: "Produto alterado",
       produto_delete: "Produto removido",
@@ -2896,17 +2897,13 @@
         <div class="card">
           <h3>${embedded ? "A Pagar (Fiado)" : "Menu A Pagar (Fiado)"}</h3>
           <p class="note">Registros de fiado ficam disponiveis por ${PAYABLES_RETENTION_DAYS} dias.</p>
-          <p class="note" style="margin-top:0.2rem;">Visual simples: abra a comanda para editar itens; aqui ficam apenas acoes rapidas do saldo.</p>
+          <p class="note" style="margin-top:0.2rem;">Clique em Editar para abrir a comanda no modo de edicao do fiado.</p>
           ${pending.length
-        ? `<div class="table-wrap payables-wrap" style="margin-top:0.75rem;"><table class="responsive-stack payables-table"><thead><tr><th>Comanda</th><th>Cliente</th><th>Total</th><th>Criado em</th><th>Ajustes</th><th>Acoes</th></tr></thead><tbody>${pending
+        ? `<div class="table-wrap payables-wrap" style="margin-top:0.75rem;"><table class="responsive-stack payables-table payables-table-pending"><thead><tr><th>Comanda</th><th>Cliente</th><th>Total pendente</th><th>Criado em</th><th>Acoes</th></tr></thead><tbody>${pending
           .map((p) => {
-            const adjustments = Array.isArray(p.adjustments) ? p.adjustments : [];
-            const lastAdjustment = adjustments[0] || null;
-            const adjustmentSummary = adjustments.length
-              ? `${adjustments.length} ajuste(s) | Ultimo: ${(Number(lastAdjustment.amountDelta || 0) >= 0 ? "+" : "-") + money(Math.abs(Number(lastAdjustment.amountDelta || 0)))}`
-              : "Sem ajustes";
-            return `<tr data-payable-id="${esc(p.id)}" class="payable-row"><td data-label="Comanda"><div class="payable-comanda-cell"><b>${esc(p.comandaId)}</b><div class="actions payable-link-actions"><button class="btn secondary compact-action" data-action="open-comanda-details" data-comanda-id="${esc(p.comandaId)}">Ver/Editar comanda</button></div></div></td><td data-label="Cliente">${esc(p.customerName)}</td><td data-label="Total"><b>${money(p.total)}</b></td><td data-label="Criado em">${formatDateTime(p.createdAt)}</td><td data-label="Ajustes"><div>${esc(adjustmentSummary)}</div>${lastAdjustment ? `<div class="note">${esc(lastAdjustment.detail || "-")}</div>` : ""}</td><td data-label="Acoes">${canManage
-                ? `<div class="actions payable-actions"><button class="btn secondary compact-action" data-action="payable-increase-manual" data-id="${p.id}">+ Valor</button><button class="btn secondary compact-action" data-action="payable-decrease-manual" data-id="${p.id}">- Valor</button><button class="btn ok compact-action" data-action="receive-payable" data-id="${p.id}">Marcar Pago</button></div>`
+            const customerName = String(p.customerName || "").trim() || "-";
+            return `<tr data-payable-id="${esc(p.id)}" class="payable-row"><td data-label="Comanda"><div class="payable-comanda-cell"><b>${esc(p.comandaId)}</b></div></td><td data-label="Cliente">${esc(customerName)}</td><td data-label="Total pendente"><b>${money(p.total)}</b></td><td data-label="Criado em">${formatDate(p.createdAt)}</td><td data-label="Acoes">${canManage
+                ? `<div class="actions payable-actions"><button class="btn secondary compact-action" data-action="open-comanda-edit-flow" data-comanda-id="${esc(p.comandaId)}">Editar</button></div>`
                 : `<span class="note">Somente admin/dev</span>`}</td></tr>`;
           })
           .join("")}</tbody></table></div>`
@@ -2915,7 +2912,7 @@
         <div class="card">
           <h3>Fiados Pagos</h3>
           ${paid.length
-        ? `<div class="table-wrap payables-wrap" style="margin-top:0.75rem;"><table class="responsive-stack payables-table"><thead><tr><th>Comanda</th><th>Cliente</th><th>Total</th><th>Pago em</th><th>Metodo</th><th>Ajustes</th></tr></thead><tbody>${paid
+        ? `<div class="table-wrap payables-wrap" style="margin-top:0.75rem;"><table class="responsive-stack payables-table payables-table-paid"><thead><tr><th>Comanda</th><th>Cliente</th><th>Total</th><th>Pago em</th><th>Metodo</th><th>Ajustes</th></tr></thead><tbody>${paid
           .map(
             (p) =>
               `<tr><td data-label="Comanda">${esc(p.comandaId)}</td><td data-label="Cliente">${esc(p.customerName)}</td><td data-label="Total">${money(p.total)}</td><td data-label="Pago em">${formatDateTime(p.paidAt)}</td><td data-label="Metodo">${esc(paymentLabel(p.paidMethod || ""))}</td><td data-label="Ajustes">${Array.isArray(p.adjustments) ? p.adjustments.length : 0}</td></tr>`
@@ -3654,7 +3651,8 @@
     const creatorRoleText = creatorRole ? ` (${roleLabel(creatorRole)})` : "";
     const isOpenComanda = state.openComandas.some((entry) => String(entry?.id || "") === String(comanda.id || ""));
     const isFiadoPendingComanda = hasPendingPayableForComanda(comanda.id);
-    if (!isOpenComanda && String(uiState.adminInlineEditComandaId || "") === String(comanda.id || "")) {
+    const pendingPayable = isFiadoPendingComanda ? findPendingPayableByComandaId(comanda.id) : null;
+    if (!isOpenComanda && !isFiadoPendingComanda && String(uiState.adminInlineEditComandaId || "") === String(comanda.id || "")) {
       uiState.adminInlineEditComandaId = null;
     }
     const showCreatorForAdmin = isAdminOrDev(viewer);
@@ -3674,7 +3672,7 @@
                 ? "Entregue"
                 : "Pendente";
         const adminActions =
-          showAdminControls && item.id
+          showAdminControls && item.id && !isFiadoPendingComanda
             ? `<td><div class="actions admin-item-actions"><button class="btn secondary compact-action" data-action="admin-edit-comanda-item" data-comanda-id="${esc(comanda.id)}" data-item-id="${esc(item.id)}">Editar</button><button class="btn danger compact-action" data-action="admin-remove-comanda-item" data-comanda-id="${esc(comanda.id)}" data-item-id="${esc(item.id)}">Remover</button></div></td>`
             : "";
         return `<tr><td>${esc(item.name)}</td><td>${item.qty}</td><td>${money(item.priceAtSale)}</td><td>${itemStatus}</td><td>${esc(item.waiterNote || "-")}${item.deliveryRequested ? ` | Entrega: ${esc(item.deliveryRecipient || "-")} @ ${esc(item.deliveryLocation || "-")}` : ""}</td>${adminActions}</tr>`;
@@ -3694,21 +3692,23 @@
         <p class="note">Mesa: ${esc(comanda.table)} | Cliente: ${esc(comanda.customer || "-")} | Status: ${esc(comanda.status || "aberta")}</p>
         ${showCreatorForAdmin ? `<p class="note">Criada por: ${esc(creatorName)}${esc(creatorRoleText)}</p>` : ""}
         <p class="note">Criada em ${formatDateTime(comanda.createdAt)} ${comanda.closedAt ? `| Fechada em ${formatDateTime(comanda.closedAt)}` : ""}</p>
-        <p class="note">Pagamento: ${esc(comandaPaymentText(comanda, { includeAmount: true, totalFallback: comandaTotal(comanda) }))} | Total: <b>${money(comandaTotal(comanda))}</b></p>
+        <p class="note">Pagamento: ${esc(comandaPaymentText(comanda, { includeAmount: true, totalFallback: comandaTotal(comanda) }))} | Total: <b>${money(isFiadoPendingComanda ? parseNumber(pendingPayable?.total || 0) : comandaTotal(comanda))}</b>${isFiadoPendingComanda ? " (fiado pendente)" : ""}</p>
         ${isFiadoPendingComanda ? `<p class="note" style="margin-top:0.35rem;">Comanda com fiado pendente: edicao de itens liberada sem reabrir a comanda.</p>` : ""}
         ${showReadOnlyAdminNotice ? `<p class="note" style="margin-top:0.35rem;">Comanda fechada/historica: somente visualizacao de dados.</p>` : ""}
         ${showAdminControls
         ? inlineEditMode
-          ? `<div class="actions" style="margin-top:0.5rem;"><button class="btn secondary" data-action="close-comanda-inline-edit">Voltar ao resumo</button></div><div style="margin-top:0.65rem;">${renderComandaCard(comanda, { forceExpanded: true })}</div>`
-          : `<div class="actions" style="margin-top:0.5rem;">${isOpenComanda ? `<button class="btn ok" data-action="open-comanda-edit-flow" data-comanda-id="${esc(comanda.id)}">Editar</button>` : ""}<button class="btn secondary" data-action="admin-edit-comanda" data-comanda-id="${esc(comanda.id)}">Editar dados da comanda</button><button class="btn ok" data-action="admin-add-comanda-item" data-comanda-id="${esc(comanda.id)}">Adicionar item pelo administrador</button></div><p class="note" style="margin-top:0.35rem;">As alteracoes registram: adicionado, alterado ou removido pelo administrador.</p>`
+          ? `<div class="actions" style="margin-top:0.5rem;"><button class="btn secondary" data-action="close-comanda-inline-edit">Voltar ao resumo</button>${isFiadoPendingComanda ? `<button class="btn warn" data-action="reduce-payable-value" data-comanda-id="${esc(comanda.id)}">Reduzir valor</button>` : ""}</div><div style="margin-top:0.65rem;">${renderComandaCard(comanda, { forceExpanded: true, fiadoEditMode: isFiadoPendingComanda && !isOpenComanda })}</div>`
+          : isFiadoPendingComanda && !isOpenComanda
+            ? `<div class="actions" style="margin-top:0.5rem;"><button class="btn ok" data-action="open-comanda-edit-flow" data-comanda-id="${esc(comanda.id)}">Editar</button></div><p class="note" style="margin-top:0.35rem;">Modo fiado: edite os itens da comanda para ajustar o valor total pendente.</p>`
+            : `<div class="actions" style="margin-top:0.5rem;">${isOpenComanda ? `<button class="btn ok" data-action="open-comanda-edit-flow" data-comanda-id="${esc(comanda.id)}">Editar</button>` : ""}<button class="btn secondary" data-action="admin-edit-comanda" data-comanda-id="${esc(comanda.id)}">Editar dados da comanda</button><button class="btn ok" data-action="admin-add-comanda-item" data-comanda-id="${esc(comanda.id)}">Adicionar item pelo administrador</button></div><p class="note" style="margin-top:0.35rem;">As alteracoes registram: adicionado, alterado ou removido pelo administrador.</p>`
         : ""
       }
         ${inlineEditMode
         ? ""
         : `<div class="table-wrap" style="margin-top:0.5rem;">
           <table>
-            <thead><tr><th>Produto</th><th>Qtd</th><th>Unit.</th><th>Status</th><th>Obs</th>${showAdminControls ? "<th>Acoes administrador</th>" : ""}</tr></thead>
-            <tbody>${rows || `<tr><td colspan="${showAdminControls ? 6 : 5}">Sem itens.</td></tr>`}</tbody>
+            <thead><tr><th>Produto</th><th>Qtd</th><th>Unit.</th><th>Status</th><th>Obs</th>${showAdminControls && !isFiadoPendingComanda ? "<th>Acoes administrador</th>" : ""}</tr></thead>
+            <tbody>${rows || `<tr><td colspan="${showAdminControls && !isFiadoPendingComanda ? 6 : 5}">Sem itens.</td></tr>`}</tbody>
           </table>
         </div>`
       }
@@ -4641,7 +4641,11 @@
   function renderComandaCard(comanda, options = {}) {
     const forceExpanded = Boolean(options.forceExpanded);
     const forceCollapsed = Boolean(options.forceCollapsed);
+    const fiadoEditMode = options.fiadoEditMode === true;
+    const formRole = fiadoEditMode ? "fiado-add-item-form" : "add-item-form";
     const total = comandaTotal(comanda);
+    const fiadoPending = fiadoEditMode ? findPendingPayableByComandaId(comanda.id) : null;
+    const totalDisplay = fiadoPending ? Math.max(0, parseNumber(fiadoPending.total || 0)) : total;
     const isCollapsed = forceExpanded ? false : forceCollapsed ? true : isWaiterComandaCollapsed(comanda.id);
     const isFinalizeOpen = Boolean(uiState.finalizeOpenByComanda[comanda.id]);
     const kitchenIndicator = renderKitchenIndicatorBadge(comanda);
@@ -4650,7 +4654,7 @@
     const actor = getCurrentUser();
     const canResolveIndicator = actor && actor.role === "waiter" && hasKitchenItems && kitchenIndicator;
     const canDeleteComanda = actor && (actor.role === "waiter" || isAdminOrDev(actor));
-    const canToggleCollapse = !forceExpanded && !forceCollapsed;
+    const canToggleCollapse = !fiadoEditMode && !forceExpanded && !forceCollapsed;
     const draftItems = getWaiterDraftItems(comanda.id);
     const tableRef = comanda.table || "-";
     const deliveryRequestedCount = (comanda.items || []).filter((item) => !item.canceled && item.deliveryRequested).length;
@@ -4672,14 +4676,14 @@
             </div>
             ${kitchenIndicator ? `<div style="margin-top:0.3rem;">${kitchenIndicator}</div>` : ""}
             <p class="note comanda-meta-note">Garcom: ${esc(resolveComandaResponsibleName(comanda))} | Cliente: ${esc(comanda.customer || "Nao informado")} | Aberta em ${formatDateTime(comanda.createdAt)}</p>
-            <p class="note">Total atual: <b>${money(total)}</b></p>
+            <p class="note">Total atual: <b>${money(totalDisplay)}</b>${fiadoPending ? ` | Fiado pendente` : ""}</p>
           </div>
           ${canToggleCollapse ? `<button class="btn secondary" data-action="toggle-comanda-collapse" data-comanda-id="${comanda.id}">${isCollapsed ? "Expandir" : "Minimizar"}</button>` : ""}
         </div>
 
         ${!isCollapsed && comanda.notes?.length ? `<div class="note">Obs da comanda: ${comanda.notes.map((n) => esc(n)).join(" | ")}</div>` : ""}
         ${!isCollapsed && canResolveIndicator ? `<div class="actions indicator-actions"><button class="btn secondary" data-action="resolve-kitchen-indicator" data-comanda-id="${comanda.id}" data-mode="entendi">Entendi o alerta</button></div>` : ""}
-        ${!isCollapsed && validItemsCount
+        ${!fiadoEditMode && !isCollapsed && validItemsCount
         ? `<div class="actions comanda-item-icon-actions"><button class="btn icon-action-btn plus" data-action="open-item-selector" data-comanda-id="${comanda.id}" data-mode="increment" title="Adicionar quantidade em item" aria-label="Adicionar quantidade em item">+</button><button class="btn icon-action-btn cancel" data-action="open-item-selector" data-comanda-id="${comanda.id}" data-mode="cancel" title="Devolver/cancelar quantidade" aria-label="Devolver ou cancelar quantidade">x</button></div>`
         : ""
       }
@@ -4694,7 +4698,7 @@
           ${(comanda.items || []).length ? (comanda.items || []).map((item) => renderItemRow(comanda, item)).join("") : `<div class="empty">Sem itens ainda.</div>`}
         </div>
 
-        <form class="form compact" data-role="add-item-form" data-comanda-id="${comanda.id}">
+        <form class="form compact" data-role="${formRole}" data-comanda-id="${comanda.id}">
           <h4>Adicionar item</h4>
           <div class="grid cols-2">
             <div class="field">
@@ -4732,24 +4736,26 @@
             </div>
           </div>
           <div class="note" data-role="kitchen-estimate">Tempo estimado cozinha: -</div>
-          ${draftItems.length
+          ${!fiadoEditMode && draftItems.length
           ? `<div class="card comanda-draft-box"><b>Itens selecionados (${draftItems.length})</b><div class="comanda-draft-list">${draftItems
             .map(
               (draft, index) =>
                 `<div class="comanda-draft-row"><span>${esc(draft.category)} | ${esc(state.products.find((p) => p.id === draft.productId && p.category === draft.category)?.name || `Produto ${draft.productId}`)} x${draft.qty}${draft.waiterNote ? ` | Obs: ${esc(draft.waiterNote)}` : ""}${draft.isDelivery ? ` | Entrega: ${esc(draft.deliveryRecipient || "-")} @ ${esc(draft.deliveryLocation || "-")}` : ""}</span><button type="button" class="btn danger compact-action" data-action="remove-draft-item" data-comanda-id="${comanda.id}" data-index="${index}">Remover</button></div>`
             )
             .join("")}</div></div>`
-          : `<div class="note">Nenhum item selecionado para envio em lote.</div>`
+          : !fiadoEditMode
+            ? `<div class="note">Nenhum item selecionado para envio em lote.</div>`
+            : ""
         }
           <div class="actions draft-actions">
-            <button class="btn secondary compact-action" type="button" data-action="queue-draft-item" data-comanda-id="${comanda.id}">Selecionar</button>
-            <button class="btn primary compact-action" type="submit">${draftItems.length ? "Adicionar lote" : "Adicionar"}</button>
+            ${fiadoEditMode ? "" : `<button class="btn secondary compact-action" type="button" data-action="queue-draft-item" data-comanda-id="${comanda.id}">Selecionar</button>`}
+            <button class="btn primary compact-action" type="submit">${fiadoEditMode ? "Adicionar" : draftItems.length ? "Adicionar lote" : "Adicionar"}</button>
           </div>
         </form>
         `
       }
 
-        ${!isCollapsed
+        ${!fiadoEditMode && !isCollapsed
         ? `<div class="actions">
           <button class="btn secondary" data-action="add-comanda-note" data-comanda-id="${comanda.id}">Adicionar observacao</button>
           <button class="btn secondary" data-action="print-comanda" data-comanda-id="${comanda.id}">Ver cupom</button>
@@ -4759,7 +4765,7 @@
         : ""
       }
 
-        ${!isCollapsed && isFinalizeOpen ? renderFinalizePanel(comanda) : ""}
+        ${!fiadoEditMode && !isCollapsed && isFinalizeOpen ? renderFinalizePanel(comanda) : ""}
       </div>
     `;
   }
@@ -5315,7 +5321,7 @@
       });
     });
 
-    document.querySelectorAll('form[data-role="add-item-form"]').forEach((form) => {
+    document.querySelectorAll('form[data-role="add-item-form"], form[data-role="fiado-add-item-form"]').forEach((form) => {
       const categorySel = form.querySelector('[data-role="item-category"]');
       const productSel = form.querySelector('[data-role="item-product"]');
       fillProductSelect(productSel, categorySel.value);
@@ -6283,6 +6289,30 @@
     return { currentTotal, nextTotal, delta, changedAt };
   }
 
+  function syncComandaFiadoSplit(comanda, pendingPayable) {
+    if (!comanda) return;
+    const methods = normalizePaymentSplits(comanda?.payment?.methods);
+    const map = new Map(methods.map((entry) => [entry.method, parseNumber(entry.amount || 0)]));
+    const fiadoTotal = Math.max(0, parseNumber(pendingPayable?.total || 0));
+    if (fiadoTotal > 0) {
+      map.set("fiado", fiadoTotal);
+    } else {
+      map.delete("fiado");
+    }
+    const normalized = [...map.entries()]
+      .map(([method, amount]) => ({ method, amount: Math.max(0, parseNumber(amount || 0)) }))
+      .filter((entry) => entry.amount > 0);
+    const method = normalized.length === 1 ? normalized[0].method : normalized.length ? "multiplo" : "nao_finalizada";
+    comanda.payment = {
+      ...(comanda.payment || {}),
+      method,
+      methodLabel: normalized.length ? paymentSplitsText(normalized, { includeAmount: true }) : paymentLabel(method),
+      methods: normalized,
+      verifiedAt: isoNow(),
+      customerName: comanda.payment?.customerName || pendingPayable?.customerName || comanda.customer || ""
+    };
+  }
+
   function adjustPayableByManualValue(id, mode = "increase") {
     const actor = currentActor();
     if (!canManagePayables(actor)) {
@@ -6334,6 +6364,100 @@
         `Saldo: ${money(result.currentTotal)} -> ${money(result.nextTotal)}. Motivo: ${reason}.`,
       comandaId: payable.comandaId
     });
+    saveState();
+    render();
+  }
+
+  function reducePendingPayableValueFromComanda(comandaId) {
+    const actor = currentActor();
+    if (!canManagePayables(actor)) {
+      alert("Somente administrador/dev pode reduzir valor de fiado.");
+      return;
+    }
+    const comanda = findComandaForDetails(String(comandaId || ""));
+    if (!comanda) {
+      alert("Comanda nao encontrada.");
+      return;
+    }
+    const payable = findPendingPayableByComandaId(comanda.id);
+    if (!payable) {
+      alert("Esta comanda nao possui fiado pendente.");
+      return;
+    }
+    const currentTotal = Math.max(0, parseNumber(payable.total || 0));
+    if (!(currentTotal > 0)) {
+      alert("Nao ha saldo pendente para reduzir.");
+      return;
+    }
+
+    const amountRaw = prompt(`Valor para reduzir do fiado da comanda ${comanda.id}:`, Number(currentTotal).toFixed(2));
+    if (amountRaw === null) return;
+    const amount = parseNumber(amountRaw);
+    if (!(amount > 0) || amount > currentTotal) {
+      alert(`Informe um valor entre ${money(0.01)} e ${money(currentTotal)}.`);
+      return;
+    }
+
+    const methodOptions = PAYMENT_METHODS.filter((entry) => entry.value !== "fiado")
+      .map((entry) => entry.value)
+      .join(", ");
+    const methodRaw = prompt(`Forma de pagamento desta reducao (${methodOptions}):`, "dinheiro");
+    if (methodRaw === null) return;
+    const method = String(methodRaw || "").trim();
+    const validMethods = new Set(PAYMENT_METHODS.filter((entry) => entry.value !== "fiado").map((entry) => entry.value));
+    if (!validMethods.has(method)) {
+      alert("Forma de pagamento invalida.");
+      return;
+    }
+
+    if (!confirm(`Confirmar reducao de ${money(amount)} no fiado da comanda ${comanda.id} usando ${paymentLabel(method)}?`)) {
+      return;
+    }
+
+    const result = applyPayableAdjustment(payable, actor, {
+      type: "fiado_reducao_pagamento",
+      detail: `Reducao de fiado via ${paymentLabel(method)}.`,
+      amountDelta: -amount
+    });
+    if (!result) {
+      alert("Nao foi possivel reduzir o valor do fiado.");
+      return;
+    }
+
+    const methods = normalizePaymentSplits(comanda?.payment?.methods);
+    const map = new Map(methods.map((entry) => [entry.method, parseNumber(entry.amount || 0)]));
+    const fiadoCurrent = Math.max(0, parseNumber(map.get("fiado") || currentTotal));
+    map.set("fiado", Math.max(0, fiadoCurrent - amount));
+    map.set(method, Math.max(0, parseNumber(map.get(method) || 0) + amount));
+    const normalizedMethods = [...map.entries()]
+      .map(([methodName, methodAmount]) => ({ method: methodName, amount: Math.max(0, parseNumber(methodAmount || 0)) }))
+      .filter((entry) => entry.amount > 0);
+    const paymentMethod = normalizedMethods.length === 1 ? normalizedMethods[0].method : normalizedMethods.length ? "multiplo" : "nao_finalizada";
+    comanda.payment = {
+      ...(comanda.payment || {}),
+      method: paymentMethod,
+      methodLabel: normalizedMethods.length ? paymentSplitsText(normalizedMethods, { includeAmount: true }) : paymentLabel(paymentMethod),
+      methods: normalizedMethods,
+      verifiedAt: isoNow(),
+      customerName: comanda.payment?.customerName || payable.customerName || comanda.customer || ""
+    };
+
+    if (Math.max(0, parseNumber(payable.total || 0)) <= 0) {
+      payable.status = "pago";
+      payable.paidAt = isoNow();
+      payable.paidMethod = method;
+      payable.updatedAt = payable.paidAt;
+    }
+
+    appendAudit({
+      actor,
+      type: "fiado_reducao_pagamento",
+      detail:
+        `Fiado da comanda ${comanda.id} reduzido em ${money(amount)} com ${paymentLabel(method)}. ` +
+        `Saldo: ${money(result.currentTotal)} -> ${money(result.nextTotal)}.`,
+      comandaId: comanda.id
+    });
+
     saveState();
     render();
   }
@@ -6771,6 +6895,90 @@
     render();
   }
 
+  function addItemToPendingFiadoComanda(form) {
+    const actor = currentActor();
+    if (!isAdminOrDev(actor)) {
+      alert("Somente administrador/dev pode editar comanda com fiado.");
+      return;
+    }
+    const comandaId = String(form.dataset.comandaId || "").trim();
+    const comanda = findComandaForAdminEdition(comandaId);
+    if (!comanda) return;
+    const pendingPayable = findPendingPayableByComandaId(comanda.id);
+    if (!pendingPayable) {
+      alert("Essa comanda nao possui fiado pendente.");
+      return;
+    }
+
+    const parsed = parseItemDraftFromForm(form);
+    if (parsed.error) {
+      alert(parsed.error);
+      return;
+    }
+    const draft = parsed.value;
+
+    const validationErrors = validateDraftBatch([draft]);
+    if (validationErrors.length) {
+      alert(`Nao foi possivel adicionar o item:\n- ${validationErrors.slice(0, 3).join("\n- ")}`);
+      return;
+    }
+
+    const createdItem = appendDraftItemToComanda(comanda, actor, draft, {
+      adjustStock: true,
+      eventType: "admin_item_add",
+      eventDetail: "Item adicionado na comanda com fiado pendente."
+    });
+    if (!createdItem) {
+      alert("Nao foi possivel adicionar o item.");
+      return;
+    }
+
+    if (!isComandaInOpenList(comanda.id)) {
+      createdItem.kitchenAlertUnread = false;
+      if (itemNeedsKitchen(createdItem)) {
+        createdItem.kitchenStatus = "entregue";
+        createdItem.kitchenStatusAt = isoNow();
+      }
+      createdItem.delivered = true;
+      createdItem.deliveredAt = isoNow();
+      comanda.kitchenAlertUnread = false;
+    }
+
+    const payableDelta = itemCountsForTotal(createdItem) ? parseNumber(createdItem.qty || 0) * parseNumber(createdItem.priceAtSale || 0) : 0;
+    if (payableDelta > 0) {
+      const payableResult = applyPayableAdjustment(pendingPayable, actor, {
+        type: "fiado_ajuste_produto_add",
+        detail: `Item ${createdItem.name} x${createdItem.qty} adicionado na comanda ${comanda.id}.`,
+        amountDelta: payableDelta,
+        productId: createdItem.productId,
+        productName: createdItem.name,
+        qty: createdItem.qty,
+        unitPrice: createdItem.priceAtSale
+      });
+      if (payableResult) {
+        appendAudit({
+          actor,
+          type: "fiado_ajuste_produto_add",
+          detail:
+            `Fiado da comanda ${comanda.id} atualizado pelo item ${createdItem.name} x${createdItem.qty}. ` +
+            `Saldo: ${money(payableResult.currentTotal)} -> ${money(payableResult.nextTotal)}.`,
+          comandaId: comanda.id
+        });
+      }
+    }
+
+    syncComandaFiadoSplit(comanda, pendingPayable);
+
+    form.qty.value = "1";
+    if (form.waiterNote) form.waiterNote.value = "";
+    if (form.isDelivery) form.isDelivery.checked = false;
+    if (form.deliveryRecipient) form.deliveryRecipient.value = "";
+    if (form.deliveryLocation) form.deliveryLocation.value = "";
+
+    saveState();
+    render();
+  }
+
   function incrementItem(comandaId, itemId, amount = 1) {
     const actor = currentActor();
     const comanda = findOpenComandaForActor(comandaId, actor);
@@ -7166,8 +7374,17 @@
   function openComandaEditFlow(comandaId) {
     const actor = currentActor();
     if (!isAdminOrDev(actor)) return false;
-    const comanda = findOpenComanda(String(comandaId || ""));
-    if (!comanda) return false;
+    const id = String(comandaId || "");
+    const comanda = findOpenComanda(id);
+    if (!comanda) {
+      const detailsComanda = findComandaForDetails(id);
+      if (!detailsComanda || !hasPendingPayableForComanda(id)) return false;
+      const keyClosed = String(detailsComanda.id || "").trim();
+      if (!keyClosed) return false;
+      uiState.adminInlineEditComandaId = keyClosed;
+      uiState.comandaDetailsId = keyClosed;
+      return true;
+    }
     const key = String(comanda.id || "").trim();
     if (!key) return false;
     uiState.waiterActiveComandaId = key;
@@ -7243,6 +7460,9 @@
       type: "admin_comanda_edit",
       detail: `Comanda alterada pelo administrador. ${changes.join(" | ")}.`
     });
+    if (pendingPayable) {
+      syncComandaFiadoSplit(comanda, pendingPayable);
+    }
 
     saveState();
     render();
@@ -7343,6 +7563,7 @@
             `Saldo: ${money(payableResult.currentTotal)} -> ${money(payableResult.nextTotal)}.`,
           comandaId: comanda.id
         });
+        syncComandaFiadoSplit(comanda, pendingPayable);
       }
     }
 
@@ -7458,6 +7679,7 @@
             `Saldo: ${money(payableResult.currentTotal)} -> ${money(payableResult.nextTotal)}.`,
           comandaId: comanda.id
         });
+        syncComandaFiadoSplit(comanda, pendingPayable);
       }
     }
 
@@ -7524,6 +7746,7 @@
             `Saldo: ${money(payableResult.currentTotal)} -> ${money(payableResult.nextTotal)}.`,
           comandaId: comanda.id
         });
+        syncComandaFiadoSplit(comanda, pendingPayable);
       }
     }
 
@@ -8279,6 +8502,11 @@
         return;
       }
 
+      if (action === "reduce-payable-value") {
+        reducePendingPayableValueFromComanda(button.dataset.comandaId);
+        return;
+      }
+
       if (action === "payable-increase-manual") {
         adjustPayableByManualValue(button.dataset.id, "increase");
         return;
@@ -8470,6 +8698,11 @@
         return;
       }
 
+      if (form.matches('form[data-role="fiado-add-item-form"]')) {
+        addItemToPendingFiadoComanda(form);
+        return;
+      }
+
       if (form.matches('form[data-role="finalize-form"]')) {
         finalizeComanda(form);
         return;
@@ -8489,7 +8722,7 @@
       const target = event.target;
 
       if (target.matches('[data-role="item-category"]')) {
-        const form = target.closest('form[data-role="add-item-form"]');
+        const form = target.closest('form[data-role="add-item-form"], form[data-role="fiado-add-item-form"]');
         if (!form) return;
         const productSel = form.querySelector('[data-role="item-product"]');
         fillProductSelect(productSel, target.value);
@@ -8499,7 +8732,7 @@
       }
 
       if (target.matches('[data-role="item-product"]') || target.name === "qty") {
-        const form = target.closest('form[data-role="add-item-form"]');
+        const form = target.closest('form[data-role="add-item-form"], form[data-role="fiado-add-item-form"]');
         if (form) {
           updateKitchenEstimate(form);
           if (target.matches('[data-role="item-product"]')) {
@@ -8510,7 +8743,7 @@
       }
 
       if (target.matches('[data-role="delivery-check"]')) {
-        const form = target.closest('form[data-role="add-item-form"]');
+        const form = target.closest('form[data-role="add-item-form"], form[data-role="fiado-add-item-form"]');
         if (form) updateDeliveryFields(form);
         return;
       }
