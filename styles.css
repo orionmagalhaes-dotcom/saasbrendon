@@ -373,22 +373,9 @@ th {
   font-size: 0.76rem;
 }
 
-.payable-quick-controls {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 0.34rem;
-  max-width: 100%;
-}
-
-.payable-quick-controls select,
-.payable-quick-controls input {
-  width: 100%;
-  min-width: 0;
-}
-
 .payable-actions {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.34rem;
   width: 100%;
 }
@@ -397,10 +384,6 @@ th {
   min-width: 0;
   min-height: 33px;
   padding: 0.32rem 0.44rem;
-}
-
-.payable-actions .btn.ok {
-  grid-column: 1 / -1;
 }
 
 .tag {

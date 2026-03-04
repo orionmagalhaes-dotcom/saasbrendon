@@ -2896,19 +2896,17 @@
         <div class="card">
           <h3>${embedded ? "A Pagar (Fiado)" : "Menu A Pagar (Fiado)"}</h3>
           <p class="note">Registros de fiado ficam disponiveis por ${PAYABLES_RETENTION_DAYS} dias.</p>
-          <p class="note" style="margin-top:0.2rem;">Ajuste rapido igual comanda: escolha categoria, produto e quantidade para adicionar/remover do fiado.</p>
+          <p class="note" style="margin-top:0.2rem;">Visual simples: abra a comanda para editar itens; aqui ficam apenas acoes rapidas do saldo.</p>
           ${pending.length
-        ? `<div class="table-wrap payables-wrap" style="margin-top:0.75rem;"><table class="responsive-stack payables-table"><thead><tr><th>Comanda</th><th>Cliente</th><th>Total</th><th>Criado em</th><th>Ajustes</th><th>Produto (ajuste rapido)</th><th>Acoes</th></tr></thead><tbody>${pending
+        ? `<div class="table-wrap payables-wrap" style="margin-top:0.75rem;"><table class="responsive-stack payables-table"><thead><tr><th>Comanda</th><th>Cliente</th><th>Total</th><th>Criado em</th><th>Ajustes</th><th>Acoes</th></tr></thead><tbody>${pending
           .map((p) => {
             const adjustments = Array.isArray(p.adjustments) ? p.adjustments : [];
             const lastAdjustment = adjustments[0] || null;
             const adjustmentSummary = adjustments.length
               ? `${adjustments.length} ajuste(s) | Ultimo: ${(Number(lastAdjustment.amountDelta || 0) >= 0 ? "+" : "-") + money(Math.abs(Number(lastAdjustment.amountDelta || 0)))}`
               : "Sem ajustes";
-            return `<tr data-payable-id="${esc(p.id)}" class="payable-row"><td data-label="Comanda"><div class="payable-comanda-cell"><b>${esc(p.comandaId)}</b><div class="actions payable-link-actions"><button class="btn secondary compact-action" data-action="open-comanda-details" data-comanda-id="${esc(p.comandaId)}">Ver comanda</button></div></div></td><td data-label="Cliente">${esc(p.customerName)}</td><td data-label="Total"><b>${money(p.total)}</b></td><td data-label="Criado em">${formatDateTime(p.createdAt)}</td><td data-label="Ajustes"><div>${esc(adjustmentSummary)}</div>${lastAdjustment ? `<div class="note">${esc(lastAdjustment.detail || "-")}</div>` : ""}</td><td data-label="Produto (ajuste rapido)">${canManage
-                ? `<div class="payable-quick-controls"><select data-role="payable-category"><option value="Bar">Bar</option><option value="Dose/Copo">Dose/Copo</option><option value="Cozinha">Cozinha</option><option value="Espetinhos">Espetinhos</option><option value="Avulso">Avulso</option><option value="Ofertas">Ofertas</option></select><select data-role="payable-product"></select><input data-role="payable-qty" type="number" min="1" step="1" value="1" /></div>`
-                : `<span class="note">Somente admin/dev</span>`}</td><td data-label="Acoes">${canManage
-                ? `<div class="actions payable-actions"><button class="btn secondary compact-action" data-action="payable-add-product" data-id="${p.id}">+ Produto</button><button class="btn secondary compact-action" data-action="payable-remove-product" data-id="${p.id}">- Produto</button><button class="btn secondary compact-action" data-action="payable-increase-manual" data-id="${p.id}">+ Valor</button><button class="btn secondary compact-action" data-action="payable-decrease-manual" data-id="${p.id}">- Valor</button><button class="btn ok compact-action" data-action="receive-payable" data-id="${p.id}">Marcar Pago</button></div>`
+            return `<tr data-payable-id="${esc(p.id)}" class="payable-row"><td data-label="Comanda"><div class="payable-comanda-cell"><b>${esc(p.comandaId)}</b><div class="actions payable-link-actions"><button class="btn secondary compact-action" data-action="open-comanda-details" data-comanda-id="${esc(p.comandaId)}">Ver/Editar comanda</button></div></div></td><td data-label="Cliente">${esc(p.customerName)}</td><td data-label="Total"><b>${money(p.total)}</b></td><td data-label="Criado em">${formatDateTime(p.createdAt)}</td><td data-label="Ajustes"><div>${esc(adjustmentSummary)}</div>${lastAdjustment ? `<div class="note">${esc(lastAdjustment.detail || "-")}</div>` : ""}</td><td data-label="Acoes">${canManage
+                ? `<div class="actions payable-actions"><button class="btn secondary compact-action" data-action="payable-increase-manual" data-id="${p.id}">+ Valor</button><button class="btn secondary compact-action" data-action="payable-decrease-manual" data-id="${p.id}">- Valor</button><button class="btn ok compact-action" data-action="receive-payable" data-id="${p.id}">Marcar Pago</button></div>`
                 : `<span class="note">Somente admin/dev</span>`}</td></tr>`;
           })
           .join("")}</tbody></table></div>`
@@ -3655,12 +3653,13 @@
     const creatorRole = String(creatorUser?.role || openEvent?.actorRole || "").trim();
     const creatorRoleText = creatorRole ? ` (${roleLabel(creatorRole)})` : "";
     const isOpenComanda = state.openComandas.some((entry) => String(entry?.id || "") === String(comanda.id || ""));
+    const isFiadoPendingComanda = hasPendingPayableForComanda(comanda.id);
     if (!isOpenComanda && String(uiState.adminInlineEditComandaId || "") === String(comanda.id || "")) {
       uiState.adminInlineEditComandaId = null;
     }
     const showCreatorForAdmin = isAdminOrDev(viewer);
-    const showAdminControls = isAdminOrDev(viewer) && isOpenComanda;
-    const showReadOnlyAdminNotice = isAdminOrDev(viewer) && !isOpenComanda;
+    const showAdminControls = isAdminOrDev(viewer) && (isOpenComanda || isFiadoPendingComanda);
+    const showReadOnlyAdminNotice = isAdminOrDev(viewer) && !isOpenComanda && !isFiadoPendingComanda;
     const inlineEditMode =
       showAdminControls && String(uiState.adminInlineEditComandaId || "") === String(comanda.id || "");
 
@@ -3696,11 +3695,12 @@
         ${showCreatorForAdmin ? `<p class="note">Criada por: ${esc(creatorName)}${esc(creatorRoleText)}</p>` : ""}
         <p class="note">Criada em ${formatDateTime(comanda.createdAt)} ${comanda.closedAt ? `| Fechada em ${formatDateTime(comanda.closedAt)}` : ""}</p>
         <p class="note">Pagamento: ${esc(comandaPaymentText(comanda, { includeAmount: true, totalFallback: comandaTotal(comanda) }))} | Total: <b>${money(comandaTotal(comanda))}</b></p>
+        ${isFiadoPendingComanda ? `<p class="note" style="margin-top:0.35rem;">Comanda com fiado pendente: edicao de itens liberada sem reabrir a comanda.</p>` : ""}
         ${showReadOnlyAdminNotice ? `<p class="note" style="margin-top:0.35rem;">Comanda fechada/historica: somente visualizacao de dados.</p>` : ""}
         ${showAdminControls
         ? inlineEditMode
           ? `<div class="actions" style="margin-top:0.5rem;"><button class="btn secondary" data-action="close-comanda-inline-edit">Voltar ao resumo</button></div><div style="margin-top:0.65rem;">${renderComandaCard(comanda, { forceExpanded: true })}</div>`
-          : `<div class="actions" style="margin-top:0.5rem;"><button class="btn ok" data-action="open-comanda-edit-flow" data-comanda-id="${esc(comanda.id)}">Editar</button><button class="btn secondary" data-action="admin-edit-comanda" data-comanda-id="${esc(comanda.id)}">Editar dados da comanda</button><button class="btn ok" data-action="admin-add-comanda-item" data-comanda-id="${esc(comanda.id)}">Adicionar item pelo administrador</button></div><p class="note" style="margin-top:0.35rem;">As alteracoes registram: adicionado, alterado ou removido pelo administrador.</p>`
+          : `<div class="actions" style="margin-top:0.5rem;">${isOpenComanda ? `<button class="btn ok" data-action="open-comanda-edit-flow" data-comanda-id="${esc(comanda.id)}">Editar</button>` : ""}<button class="btn secondary" data-action="admin-edit-comanda" data-comanda-id="${esc(comanda.id)}">Editar dados da comanda</button><button class="btn ok" data-action="admin-add-comanda-item" data-comanda-id="${esc(comanda.id)}">Adicionar item pelo administrador</button></div><p class="note" style="margin-top:0.35rem;">As alteracoes registram: adicionado, alterado ou removido pelo administrador.</p>`
         : ""
       }
         ${inlineEditMode
@@ -5332,13 +5332,6 @@
       updateQuickSaleFlow(form);
     });
 
-    document.querySelectorAll('tr[data-payable-id]').forEach((row) => {
-      const categorySel = row.querySelector('[data-role="payable-category"]');
-      const productSel = row.querySelector('[data-role="payable-product"]');
-      if (!categorySel || !productSel) return;
-      fillPayableProductSelect(productSel, categorySel.value);
-    });
-
     const addProductForm = document.getElementById("add-product-form");
     if (addProductForm) {
       updateAdminProductSubmenu(addProductForm);
@@ -5414,25 +5407,6 @@
     } else {
       selectElement.selectedIndex = 0;
     }
-  }
-
-  function fillPayableProductSelect(selectElement, category) {
-    if (!selectElement) return;
-    const options = state.products.filter((p) => p.category === category);
-
-    if (!options.length) {
-      selectElement.innerHTML = `<option value="">Sem produtos</option>`;
-      return;
-    }
-
-    selectElement.innerHTML = options
-      .map(
-        (p) =>
-          `<option value="${p.id}">${esc(p.name)}${p.category === "Ofertas" ? ` (${p.requiresKitchen ? "cozinha" : "pronta entrega"})` : ""} | ${money(p.price)} | estoque ${p.stock}${p.available === false ? " | indisponivel" : ""}</option>`
-      )
-      .join("");
-
-    selectElement.selectedIndex = 0;
   }
 
   function fillQuickSaleProductSelect(form) {
@@ -6264,21 +6238,20 @@
     return Boolean(actor && isAdminOrDev(actor));
   }
 
+  function findPendingPayableByComandaId(comandaId) {
+    const key = String(comandaId || "").trim();
+    if (!key) return null;
+    return state.payables.find((entry) => entry.status === "pendente" && String(entry?.comandaId || "").trim() === key) || null;
+  }
+
+  function hasPendingPayableForComanda(comandaId) {
+    return Boolean(findPendingPayableByComandaId(comandaId));
+  }
+
   function findPayableById(id) {
     const key = String(id || "").trim();
     if (!key) return null;
     return state.payables.find((entry) => String(entry?.id || "").trim() === key) || null;
-  }
-
-  function readPayableProductSelectionFromButton(button) {
-    const row = button?.closest?.("tr[data-payable-id]");
-    if (!row) return null;
-    const category = String(row.querySelector('[data-role="payable-category"]')?.value || "").trim();
-    const productId = Number(row.querySelector('[data-role="payable-product"]')?.value || 0);
-    const qtyRaw = parseNumber(row.querySelector('[data-role="payable-qty"]')?.value || 1);
-    const qty = Math.max(1, Math.floor(qtyRaw));
-    if (!category || !(productId > 0) || !(qty > 0)) return null;
-    return { category, productId, qty };
   }
 
   function applyPayableAdjustment(payable, actor, adjustment) {
@@ -7177,8 +7150,10 @@
       alert("Comanda nao encontrada.");
       return null;
     }
-    if (!isComandaInOpenList(comanda.id)) {
-      alert("Comandas fechadas/historicas nao podem ser editadas. Apenas visualizacao.");
+    const isOpenComanda = isComandaInOpenList(comanda.id);
+    const hasPendingFiado = hasPendingPayableForComanda(comanda.id);
+    if (!isOpenComanda && !hasPendingFiado) {
+      alert("Comanda fechada/historica sem fiado pendente nao pode ser editada. Apenas visualizacao.");
       return null;
     }
     return comanda;
@@ -7226,6 +7201,7 @@
     const actor = currentActor();
     const comanda = findComandaForAdminEdition(comandaId);
     if (!comanda) return;
+    const pendingPayable = findPendingPayableByComandaId(comanda.id);
 
     const nextTableRaw = prompt("Mesa/referencia:", String(comanda.table || ""));
     if (nextTableRaw === null) return;
@@ -7246,6 +7222,10 @@
     if (String(comanda.customer || "") !== nextCustomer) {
       changes.push(`cliente ${comanda.customer || "-"} -> ${nextCustomer || "-"}`);
       comanda.customer = nextCustomer;
+      if (pendingPayable) {
+        pendingPayable.customerName = nextCustomer || pendingPayable.customerName || "";
+        pendingPayable.updatedAt = isoNow();
+      }
     }
     if (extraNote) {
       comanda.notes = Array.isArray(comanda.notes) ? comanda.notes : [];
@@ -7302,7 +7282,9 @@
     const waiterNote = String(noteInput || "").trim();
 
     const isOpenComanda = isComandaInOpenList(comanda.id);
-    if (isOpenComanda && Number(product.stock || 0) < qty) {
+    const pendingPayable = findPendingPayableByComandaId(comanda.id);
+    const canAdjustStock = isOpenComanda || Boolean(pendingPayable);
+    if (canAdjustStock && Number(product.stock || 0) < qty) {
       alert(`Estoque insuficiente para ${product.name}. Disponivel: ${product.stock}.`);
       return;
     }
@@ -7318,9 +7300,9 @@
       deliveryLocation: ""
     };
 
-    const stockInfo = isOpenComanda ? "" : " Estoque nao foi alterado (comanda fechada/historica).";
+    const stockInfo = canAdjustStock ? ` Estoque baixado: -${qty}.` : " Estoque nao foi alterado (comanda fechada/historica).";
     const createdItem = appendDraftItemToComanda(comanda, actor, draft, {
-      adjustStock: isOpenComanda,
+      adjustStock: canAdjustStock,
       eventType: "admin_item_add",
       eventDetail: `Item ${product.name} x${qty} adicionado pelo administrador.${stockInfo}`
     });
@@ -7339,6 +7321,29 @@
       createdItem.delivered = true;
       createdItem.deliveredAt = isoNow();
       comanda.kitchenAlertUnread = false;
+    }
+
+    if (pendingPayable) {
+      const payableDelta = parseNumber(createdItem.qty || 0) * parseNumber(createdItem.priceAtSale || 0);
+      const payableResult = applyPayableAdjustment(pendingPayable, actor, {
+        type: "fiado_ajuste_produto_add",
+        detail: `Item ${createdItem.name} x${createdItem.qty} adicionado na comanda ${comanda.id}.`,
+        amountDelta: payableDelta,
+        productId: createdItem.productId,
+        productName: createdItem.name,
+        qty: createdItem.qty,
+        unitPrice: createdItem.priceAtSale
+      });
+      if (payableResult) {
+        appendAudit({
+          actor,
+          type: "fiado_ajuste_produto_add",
+          detail:
+            `Fiado da comanda ${comanda.id} atualizado com item ${createdItem.name} x${createdItem.qty}. ` +
+            `Saldo: ${money(payableResult.currentTotal)} -> ${money(payableResult.nextTotal)}.`,
+          comandaId: comanda.id
+        });
+      }
     }
 
     saveState();
@@ -7378,11 +7383,21 @@
     const prevPrice = parseNumber(item.priceAtSale || 0);
     const prevNote = String(item.waiterNote || "");
     const isOpenComanda = isComandaInOpenList(comanda.id);
+    const pendingPayable = findPendingPayableByComandaId(comanda.id);
+    const canAdjustStock = isOpenComanda || Boolean(pendingPayable);
     const stockChanges = [];
     const product = state.products.find((entry) => Number(entry.id) === Number(item.productId));
     const qtyDelta = nextQty - prevQty;
+    const prevBillable = itemCountsForTotal({ ...item, qty: prevQty, priceAtSale: prevPrice }) ? prevQty * prevPrice : 0;
+    const nextBillable = itemCountsForTotal({ ...item, qty: nextQty, priceAtSale: nextPrice }) ? nextQty * nextPrice : 0;
+    const payableDelta = pendingPayable ? nextBillable - prevBillable : 0;
 
-    if (isOpenComanda && product && qtyDelta !== 0) {
+    if (pendingPayable && payableDelta < 0 && Number(pendingPayable.total || 0) + payableDelta < 0) {
+      alert("O ajuste deixaria o saldo do fiado negativo. Ajuste os valores antes de salvar.");
+      return;
+    }
+
+    if (canAdjustStock && product && qtyDelta !== 0) {
       if (qtyDelta > 0) {
         if (Number(product.stock || 0) < qtyDelta) {
           alert(`Estoque insuficiente para aumentar ${qtyDelta} unidade(s) de ${product.name}. Disponivel: ${product.stock}.`);
@@ -7409,6 +7424,7 @@
     if (prevPrice !== nextPrice) changes.push(`preco ${money(prevPrice)} -> ${money(nextPrice)}`);
     if (prevNote !== nextNote) changes.push(`obs ${prevNote || "-"} -> ${nextNote || "-"}`);
     if (stockChanges.length) changes.push(stockChanges.join(", "));
+    if (pendingPayable && payableDelta !== 0) changes.push(`fiado ${money(prevBillable)} -> ${money(nextBillable)}`);
 
     if (!changes.length) {
       alert("Nenhuma alteracao informada.");
@@ -7421,6 +7437,29 @@
       detail: `Item ${item.name} alterado pelo administrador. ${changes.join(" | ")}.`,
       itemId: item.id
     });
+
+    if (pendingPayable && payableDelta !== 0) {
+      const payableType = payableDelta > 0 ? "fiado_ajuste_produto_add" : "fiado_ajuste_produto_remove";
+      const payableResult = applyPayableAdjustment(pendingPayable, actor, {
+        type: payableType,
+        detail: `Item ${item.name} alterado na comanda ${comanda.id}.`,
+        amountDelta: payableDelta,
+        productId: item.productId,
+        productName: item.name,
+        qty: nextQty,
+        unitPrice: nextPrice
+      });
+      if (payableResult) {
+        appendAudit({
+          actor,
+          type: payableType,
+          detail:
+            `Fiado da comanda ${comanda.id} ajustado pela edicao do item ${item.name}. ` +
+            `Saldo: ${money(payableResult.currentTotal)} -> ${money(payableResult.nextTotal)}.`,
+          comandaId: comanda.id
+        });
+      }
+    }
 
     saveState();
     render();
@@ -7438,10 +7477,18 @@
     if (!confirm(`Remover item ${item.name} da comanda ${comanda.id}?`)) return;
 
     const isOpenComanda = isComandaInOpenList(comanda.id);
+    const pendingPayable = findPendingPayableByComandaId(comanda.id);
+    const canAdjustStock = isOpenComanda || Boolean(pendingPayable);
     const qty = Math.max(0, parseNumber(item.qty || 0));
     const product = state.products.find((entry) => Number(entry.id) === Number(item.productId));
+    const itemBillableValue = itemCountsForTotal(item) ? qty * parseNumber(item.priceAtSale || 0) : 0;
+    const payableDelta = pendingPayable ? -itemBillableValue : 0;
+    if (pendingPayable && payableDelta < 0 && Number(pendingPayable.total || 0) + payableDelta < 0) {
+      alert("O ajuste deixaria o saldo do fiado negativo. Ajuste manualmente antes de remover este item.");
+      return;
+    }
     let stockInfo = "";
-    if (isOpenComanda && product && qty > 0) {
+    if (canAdjustStock && product && qty > 0) {
       product.stock += qty;
       stockInfo = ` Estoque devolvido: +${qty}.`;
     } else if (!isOpenComanda) {
@@ -7457,6 +7504,28 @@
       detail: `Item ${item.name} x${qty} removido pelo administrador.${stockInfo}`,
       itemId: item.id
     });
+
+    if (pendingPayable && payableDelta !== 0) {
+      const payableResult = applyPayableAdjustment(pendingPayable, actor, {
+        type: "fiado_ajuste_produto_remove",
+        detail: `Item ${item.name} removido na comanda ${comanda.id}.`,
+        amountDelta: payableDelta,
+        productId: item.productId,
+        productName: item.name,
+        qty,
+        unitPrice: item.priceAtSale
+      });
+      if (payableResult) {
+        appendAudit({
+          actor,
+          type: "fiado_ajuste_produto_remove",
+          detail:
+            `Fiado da comanda ${comanda.id} ajustado pela remocao do item ${item.name}. ` +
+            `Saldo: ${money(payableResult.currentTotal)} -> ${money(payableResult.nextTotal)}.`,
+          comandaId: comanda.id
+        });
+      }
+    }
 
     saveState();
     render();
@@ -8210,16 +8279,6 @@
         return;
       }
 
-      if (action === "payable-add-product") {
-        adjustPayableByProduct(button.dataset.id, "add", readPayableProductSelectionFromButton(button) || {});
-        return;
-      }
-
-      if (action === "payable-remove-product") {
-        adjustPayableByProduct(button.dataset.id, "remove", readPayableProductSelectionFromButton(button) || {});
-        return;
-      }
-
       if (action === "payable-increase-manual") {
         adjustPayableByManualValue(button.dataset.id, "increase");
         return;
@@ -8436,14 +8495,6 @@
         fillProductSelect(productSel, target.value);
         updateKitchenEstimate(form);
         updateDeliveryFields(form);
-        return;
-      }
-
-      if (target.matches('[data-role="payable-category"]')) {
-        const row = target.closest("tr[data-payable-id]");
-        if (!row) return;
-        const productSel = row.querySelector('[data-role="payable-product"]');
-        fillPayableProductSelect(productSel, target.value);
         return;
       }
 
