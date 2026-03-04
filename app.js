@@ -3814,10 +3814,14 @@
 
   function renderAdminHistory() {
     const currentAudit = state.auditLog.slice(0, 5000);
+    const currentCashOpenedAtMs = new Date(state.cash?.openedAt || 0).getTime();
+    const remoteCurrentCashAudit = uiState.remoteMonitorEvents.filter((event) => {
+      if (!Number.isFinite(currentCashOpenedAtMs) || currentCashOpenedAtMs <= 0) return true;
+      const eventTs = new Date(event?.ts || event?.broadcastAt || 0).getTime();
+      return Number.isFinite(eventTs) && eventTs >= currentCashOpenedAtMs;
+    });
     const closures = state.history90;
-    const closureAudit = closures.flatMap((closure) => (Array.isArray(closure.auditLog) ? closure.auditLog : []));
-    const mergedAudit = dedupeAuditEvents([...currentAudit, ...closureAudit]).sort((a, b) => new Date(b.ts || 0) - new Date(a.ts || 0));
-    const displayedAuditAll = dedupeAuditEvents([...uiState.remoteMonitorEvents, ...mergedAudit])
+    const displayedAuditAll = dedupeAuditEvents([...remoteCurrentCashAudit, ...currentAudit])
       .sort((a, b) => new Date(b.ts || b.broadcastAt || 0) - new Date(a.ts || a.broadcastAt || 0))
       .slice(0, 1800);
     const closureComandas = closures.flatMap((closure) => closure.commandas || []);
@@ -3851,7 +3855,7 @@
       <div class="grid cols-2">
         <div class="card">
           <h3>Eventos em tempo real</h3>
-          <p class="note">Eventos em tempo real + eventos preservados nos fechamentos de caixa.</p>
+          <p class="note">Mostra apenas eventos em tempo real do caixa atual.</p>
           <p class="note" style="margin-top:0.25rem;">Comandas abertas agora: <b>${openCount}</b> | Comandas fechadas no caixa atual: <b>${closedCount}</b> | Total de comandas no historico minimizado: <b>${archivedCount}</b></p>
           <details class="compact-details" data-persist-key="${esc(auditDetailsKey)}" style="margin-top:0.75rem;"${detailOpenAttr(auditDetailsKey)}>
             <summary>Ver alteracoes em tempo real (${displayedAudit.length})</summary>
@@ -7614,13 +7618,12 @@
     state.closedComandas = [];
     state.cookHistory = [];
     state.auditLog = [];
+    uiState.remoteMonitorEvents = [];
     state.cash = {
       id: `CX-${state.seq.cash++}`,
       openedAt: isoNow(),
       date: todayISO()
     };
-
-    appendAudit({ actor, type: "caixa_novo", detail: `Novo caixa ${state.cash.id} iniciado.` });
 
     saveState();
     openCashHtmlReportRecord(archivedHtmlReport, {
