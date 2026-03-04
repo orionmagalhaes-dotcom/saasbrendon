@@ -2896,16 +2896,18 @@
         <div class="card">
           <h3>${embedded ? "A Pagar (Fiado)" : "Menu A Pagar (Fiado)"}</h3>
           <p class="note">Registros de fiado ficam disponiveis por ${PAYABLES_RETENTION_DAYS} dias.</p>
-          <p class="note" style="margin-top:0.2rem;">Administrador pode adicionar/remover produtos e ajustar valor manualmente no saldo pendente.</p>
+          <p class="note" style="margin-top:0.2rem;">Ajuste rapido igual comanda: escolha categoria, produto e quantidade para adicionar/remover do fiado.</p>
           ${pending.length
-        ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="responsive-stack payables-table"><thead><tr><th>Comanda</th><th>Cliente</th><th>Total</th><th>Criado em</th><th>Ajustes</th><th>Acoes</th></tr></thead><tbody>${pending
+        ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="responsive-stack payables-table"><thead><tr><th>Comanda</th><th>Cliente</th><th>Total</th><th>Criado em</th><th>Ajustes</th><th>Produto (ajuste rapido)</th><th>Acoes</th></tr></thead><tbody>${pending
           .map((p) => {
             const adjustments = Array.isArray(p.adjustments) ? p.adjustments : [];
             const lastAdjustment = adjustments[0] || null;
             const adjustmentSummary = adjustments.length
               ? `${adjustments.length} ajuste(s) | Ultimo: ${(Number(lastAdjustment.amountDelta || 0) >= 0 ? "+" : "-") + money(Math.abs(Number(lastAdjustment.amountDelta || 0)))}`
               : "Sem ajustes";
-            return `<tr><td data-label="Comanda">${esc(p.comandaId)}</td><td data-label="Cliente">${esc(p.customerName)}</td><td data-label="Total">${money(p.total)}</td><td data-label="Criado em">${formatDateTime(p.createdAt)}</td><td data-label="Ajustes"><div>${esc(adjustmentSummary)}</div>${lastAdjustment ? `<div class="note">${esc(lastAdjustment.detail || "-")}</div>` : ""}</td><td data-label="Acoes">${canManage
+            return `<tr data-payable-id="${esc(p.id)}"><td data-label="Comanda"><div><b>${esc(p.comandaId)}</b></div><div class="actions" style="margin-top:0.35rem;"><button class="btn secondary compact-action" data-action="open-comanda-details" data-comanda-id="${esc(p.comandaId)}">Ver comanda</button></div></td><td data-label="Cliente">${esc(p.customerName)}</td><td data-label="Total">${money(p.total)}</td><td data-label="Criado em">${formatDateTime(p.createdAt)}</td><td data-label="Ajustes"><div>${esc(adjustmentSummary)}</div>${lastAdjustment ? `<div class="note">${esc(lastAdjustment.detail || "-")}</div>` : ""}</td><td data-label="Produto (ajuste rapido)">${canManage
+                ? `<div class="grid" style="gap:0.35rem;min-width:230px;"><select data-role="payable-category"><option value="Bar">Bar</option><option value="Dose/Copo">Dose/Copo</option><option value="Cozinha">Cozinha</option><option value="Espetinhos">Espetinhos</option><option value="Avulso">Avulso</option><option value="Ofertas">Ofertas</option></select><select data-role="payable-product"></select><input data-role="payable-qty" type="number" min="1" step="1" value="1" /></div>`
+                : `<span class="note">Somente admin/dev</span>`}</td><td data-label="Acoes">${canManage
                 ? `<div class="actions"><button class="btn secondary compact-action" data-action="payable-add-product" data-id="${p.id}">+ Produto</button><button class="btn secondary compact-action" data-action="payable-remove-product" data-id="${p.id}">- Produto</button><button class="btn secondary compact-action" data-action="payable-increase-manual" data-id="${p.id}">+ Valor</button><button class="btn secondary compact-action" data-action="payable-decrease-manual" data-id="${p.id}">- Valor</button><button class="btn ok compact-action" data-action="receive-payable" data-id="${p.id}">Marcar Pago</button></div>`
                 : `<span class="note">Somente admin/dev</span>`}</td></tr>`;
           })
@@ -2924,6 +2926,7 @@
         : `<div class="empty" style="margin-top:0.75rem;">Sem registros pagos.</div>`}
         </div>
       </div>
+      ${renderComandaDetailsBox()}
     `;
   }
 
@@ -5329,6 +5332,13 @@
       updateQuickSaleFlow(form);
     });
 
+    document.querySelectorAll('tr[data-payable-id]').forEach((row) => {
+      const categorySel = row.querySelector('[data-role="payable-category"]');
+      const productSel = row.querySelector('[data-role="payable-product"]');
+      if (!categorySel || !productSel) return;
+      fillPayableProductSelect(productSel, categorySel.value);
+    });
+
     const addProductForm = document.getElementById("add-product-form");
     if (addProductForm) {
       updateAdminProductSubmenu(addProductForm);
@@ -5404,6 +5414,25 @@
     } else {
       selectElement.selectedIndex = 0;
     }
+  }
+
+  function fillPayableProductSelect(selectElement, category) {
+    if (!selectElement) return;
+    const options = state.products.filter((p) => p.category === category);
+
+    if (!options.length) {
+      selectElement.innerHTML = `<option value="">Sem produtos</option>`;
+      return;
+    }
+
+    selectElement.innerHTML = options
+      .map(
+        (p) =>
+          `<option value="${p.id}">${esc(p.name)}${p.category === "Ofertas" ? ` (${p.requiresKitchen ? "cozinha" : "pronta entrega"})` : ""} | ${money(p.price)} | estoque ${p.stock}${p.available === false ? " | indisponivel" : ""}</option>`
+      )
+      .join("");
+
+    selectElement.selectedIndex = 0;
   }
 
   function fillQuickSaleProductSelect(form) {
@@ -6241,6 +6270,17 @@
     return state.payables.find((entry) => String(entry?.id || "").trim() === key) || null;
   }
 
+  function readPayableProductSelectionFromButton(button) {
+    const row = button?.closest?.("tr[data-payable-id]");
+    if (!row) return null;
+    const category = String(row.querySelector('[data-role="payable-category"]')?.value || "").trim();
+    const productId = Number(row.querySelector('[data-role="payable-product"]')?.value || 0);
+    const qtyRaw = parseNumber(row.querySelector('[data-role="payable-qty"]')?.value || 1);
+    const qty = Math.max(1, Math.floor(qtyRaw));
+    if (!category || !(productId > 0) || !(qty > 0)) return null;
+    return { category, productId, qty };
+  }
+
   function applyPayableAdjustment(payable, actor, adjustment) {
     if (!payable || !actor || !adjustment) return null;
     const currentTotal = Math.max(0, parseNumber(payable.total || 0));
@@ -6325,7 +6365,7 @@
     render();
   }
 
-  function adjustPayableByProduct(id, mode = "add") {
+  function adjustPayableByProduct(id, mode = "add", options = {}) {
     const actor = currentActor();
     if (!canManagePayables(actor)) {
       alert("Somente administrador/dev pode ajustar fiados.");
@@ -6337,28 +6377,41 @@
       return;
     }
 
-    const productPrompt = prompt(
-      `Produto (ID ou nome) para ${mode === "remove" ? "remover" : "adicionar"} no fiado da comanda ${payable.comandaId}:`,
-      ""
-    );
-    if (productPrompt === null) return;
-    const product = resolveProductForAdminInput(productPrompt);
+    const providedCategory = String(options.category || "").trim();
+    const providedProductId = Number(options.productId || 0);
+    const providedQty = Math.max(0, Math.floor(parseNumber(options.qty || 0)));
+
+    let product = null;
+    let qty = 0;
+    if (providedCategory && providedProductId > 0 && providedQty > 0) {
+      product = state.products.find((entry) => Number(entry.id) === providedProductId && entry.category === providedCategory) || null;
+      qty = providedQty;
+    } else {
+      const productPrompt = prompt(
+        `Produto (ID ou nome) para ${mode === "remove" ? "remover" : "adicionar"} no fiado da comanda ${payable.comandaId}:`,
+        ""
+      );
+      if (productPrompt === null) return;
+      product = resolveProductForAdminInput(productPrompt);
+      if (!product) {
+        alert("Produto nao encontrado.");
+        return;
+      }
+
+      const qtyPrompt = prompt("Quantidade:", "1");
+      if (qtyPrompt === null) return;
+      qty = Math.max(0, Math.floor(parseNumber(qtyPrompt)));
+      if (!(qty > 0)) {
+        alert("Quantidade invalida.");
+        return;
+      }
+    }
     if (!product) {
       alert("Produto nao encontrado.");
       return;
     }
 
-    const qtyPrompt = prompt("Quantidade:", "1");
-    if (qtyPrompt === null) return;
-    const qty = Math.max(0, Math.floor(parseNumber(qtyPrompt)));
-    if (!(qty > 0)) {
-      alert("Quantidade invalida.");
-      return;
-    }
-
-    const unitPrompt = prompt("Valor unitario para o ajuste:", Number(parseNumber(product.price || 0)).toFixed(2));
-    if (unitPrompt === null) return;
-    const unitPrice = parseNumber(unitPrompt);
+    const unitPrice = Math.max(0, parseNumber(options.unitPrice !== undefined ? options.unitPrice : product.price || 0));
     if (!(unitPrice >= 0)) {
       alert("Valor unitario invalido.");
       return;
@@ -6369,6 +6422,14 @@
       alert("Ajuste zerado. Informe quantidade/valor maiores que zero.");
       return;
     }
+    if (mode !== "remove" && product.available === false) {
+      alert(`Produto ${product.name} esta indisponivel no cardapio.`);
+      return;
+    }
+    if (mode !== "remove" && Number(product.stock || 0) < qty) {
+      alert(`Estoque insuficiente para ${product.name}. Disponivel: ${product.stock}.`);
+      return;
+    }
     const currentTotal = Math.max(0, parseNumber(payable.total || 0));
     if (mode === "remove" && amount > currentTotal) {
       alert(`Nao e possivel remover ${money(amount)} porque o saldo atual e ${money(currentTotal)}.`);
@@ -6377,9 +6438,14 @@
 
     const delta = mode === "remove" ? -amount : amount;
     const actionLabel = mode === "remove" ? "Remocao" : "Adicao";
+    if (mode === "remove") {
+      product.stock = Math.max(0, parseNumber(product.stock || 0) + qty);
+    } else {
+      product.stock = Math.max(0, parseNumber(product.stock || 0) - qty);
+    }
     const result = applyPayableAdjustment(payable, actor, {
       type: mode === "remove" ? "fiado_ajuste_produto_remove" : "fiado_ajuste_produto_add",
-      detail: `${actionLabel} de produto no fiado: ${product.name} x${qty} (${money(unitPrice)} un).`,
+      detail: `${actionLabel} de produto no fiado: ${product.name} x${qty} (${money(unitPrice)} un). Estoque ${mode === "remove" ? "+" : "-"}${qty}.`,
       amountDelta: delta,
       productId: product.id,
       productName: product.name,
@@ -6396,7 +6462,8 @@
       type: mode === "remove" ? "fiado_ajuste_produto_remove" : "fiado_ajuste_produto_add",
       detail:
         `Fiado da comanda ${payable.comandaId} ${mode === "remove" ? "teve remocao" : "recebeu adicao"} ` +
-        `de ${product.name} x${qty} (${money(unitPrice)} un). Saldo: ${money(result.currentTotal)} -> ${money(result.nextTotal)}.`,
+        `de ${product.name} x${qty} (${money(unitPrice)} un). Saldo: ${money(result.currentTotal)} -> ${money(result.nextTotal)}. ` +
+        `Estoque ${mode === "remove" ? "devolvido" : "baixado"}: ${qty}.`,
       comandaId: payable.comandaId
     });
     saveState();
@@ -8144,12 +8211,12 @@
       }
 
       if (action === "payable-add-product") {
-        adjustPayableByProduct(button.dataset.id, "add");
+        adjustPayableByProduct(button.dataset.id, "add", readPayableProductSelectionFromButton(button) || {});
         return;
       }
 
       if (action === "payable-remove-product") {
-        adjustPayableByProduct(button.dataset.id, "remove");
+        adjustPayableByProduct(button.dataset.id, "remove", readPayableProductSelectionFromButton(button) || {});
         return;
       }
 
@@ -8369,6 +8436,14 @@
         fillProductSelect(productSel, target.value);
         updateKitchenEstimate(form);
         updateDeliveryFields(form);
+        return;
+      }
+
+      if (target.matches('[data-role="payable-category"]')) {
+        const row = target.closest("tr[data-payable-id]");
+        if (!row) return;
+        const productSel = row.querySelector('[data-role="payable-product"]');
+        fillPayableProductSelect(productSel, target.value);
         return;
       }
 
