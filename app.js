@@ -1269,6 +1269,46 @@
     return normalized;
   }
 
+  function normalizePayableRecord(payable, fallbackId = 0) {
+    const source = payable && typeof payable === "object" ? payable : {};
+    const createdAt = String(source.createdAt || source.paidAt || "");
+    const paidAt = source.paidAt ? String(source.paidAt) : null;
+    const updatedAt = String(source.updatedAt || paidAt || createdAt || "");
+    const adjustments = Array.isArray(source.adjustments)
+      ? source.adjustments
+        .filter((entry) => entry && typeof entry === "object")
+        .map((entry, idx) => ({
+          id: String(entry.id || `PGA-NORM-${fallbackId + 1}-${idx + 1}`),
+          ts: String(entry.ts || entry.createdAt || updatedAt || createdAt || ""),
+          type: String(entry.type || "manual"),
+          detail: String(entry.detail || ""),
+          amountDelta: parseNumber(entry.amountDelta || 0),
+          productId: entry.productId !== undefined && entry.productId !== null ? Number(entry.productId) : null,
+          productName: String(entry.productName || ""),
+          qty: Math.max(0, parseNumber(entry.qty || 0)),
+          unitPrice: Math.max(0, parseNumber(entry.unitPrice || 0)),
+          actorId: entry.actorId !== undefined ? entry.actorId : null,
+          actorRole: String(entry.actorRole || ""),
+          actorName: String(entry.actorName || "")
+        }))
+      : [];
+    const total = Math.max(0, parseNumber(source.total || 0));
+    const status = source.status === "pago" ? "pago" : "pendente";
+    return {
+      ...source,
+      id: String(source.id || `PG-NORM-${String(fallbackId + 1).padStart(5, "0")}`),
+      comandaId: String(source.comandaId || "-"),
+      customerName: String(source.customerName || ""),
+      total,
+      status,
+      createdAt,
+      updatedAt,
+      paidAt: status === "pago" ? paidAt || updatedAt || createdAt : null,
+      paidMethod: source.paidMethod ? String(source.paidMethod) : null,
+      adjustments
+    };
+  }
+
   function normalizeStateShape(source) {
     const parsed = source && typeof source === "object" ? source : {};
     const fallback = initialState();
@@ -1287,7 +1327,7 @@
         ? parsed.cashHtmlReports.map((entry, idx) => normalizeCashHtmlReportRecord(entry, idx))
         : [],
       cookHistory: Array.isArray(parsed.cookHistory) ? parsed.cookHistory : [],
-      payables: Array.isArray(parsed.payables) ? parsed.payables : [],
+      payables: Array.isArray(parsed.payables) ? parsed.payables.map((entry, idx) => normalizePayableRecord(entry, idx)) : [],
       auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog : [],
       history90: Array.isArray(parsed.history90)
         ? parsed.history90.map((entry) => ({
@@ -1879,6 +1919,29 @@
     return getCurrentUser() || { id: 0, role: "system", name: "Sistema" };
   }
 
+  function confirmConnectedAccountCredentials(actionLabel, options = {}) {
+    const actor = getCurrentUser();
+    const allowedRoles = Array.isArray(options.allowedRoles) && options.allowedRoles.length ? options.allowedRoles : ["waiter", "admin", "dev"];
+    if (!actor || !allowedRoles.includes(actor.role)) {
+      alert("Acao indisponivel para o perfil atual.");
+      return null;
+    }
+
+    const action = String(actionLabel || "executar esta acao");
+    const loginValue = prompt(`Para ${action}, confirme o login da conta conectada:`, String(actor.login || ""));
+    if (loginValue === null) return null;
+    const password = prompt("Confirme a senha da conta conectada:", "");
+    if (password === null) return null;
+
+    const expectedLogin = String(actor.login || "").trim();
+    const expectedPassword = actor.id === DEV_SESSION_ID ? DEV_ACCESS_PASSWORD : String(actor.password || "");
+    if (String(loginValue || "").trim() !== expectedLogin || String(password || "") !== expectedPassword) {
+      alert("Login/senha invalidos para a conta conectada.");
+      return null;
+    }
+    return actor;
+  }
+
   function appendAudit({ actor, type, detail, comandaId = null, itemId = null, reason = "" }) {
     const entry = {
       id: `EV-${state.seq.event++}`,
@@ -2184,12 +2247,16 @@
       comanda_obs: "Observacao adicionada",
       comanda_finalizada: "Comanda finalizada",
       comanda_finalizada_auto: "Finalizacao automatica",
+      comanda_excluida: "Comanda excluida",
       admin_comanda_edit: "Comanda alterada pelo administrador",
       garcom_ciente_alerta: "Garcom ciente do alerta",
       garcom_entregou_pedido: "Garcom confirmou entrega",
       venda_avulsa: "Venda avulsa",
       venda_avulsa_cozinha: "Venda avulsa (cozinha)",
       fiado_pago: "Fiado marcado como pago",
+      fiado_ajuste_manual: "Ajuste manual no fiado",
+      fiado_ajuste_produto_add: "Produto adicionado no fiado",
+      fiado_ajuste_produto_remove: "Produto removido do fiado",
       produto_add: "Produto criado",
       produto_edit: "Produto alterado",
       produto_delete: "Produto removido",
@@ -2822,28 +2889,36 @@
     const embedded = options.embedded === true;
     const pending = state.payables.filter((p) => p.status === "pendente");
     const paid = state.payables.filter((p) => p.status === "pago");
+    const canManage = canManagePayables(currentActor());
 
     return `
       <div class="grid cols-2">
         <div class="card">
           <h3>${embedded ? "A Pagar (Fiado)" : "Menu A Pagar (Fiado)"}</h3>
           <p class="note">Registros de fiado ficam disponiveis por ${PAYABLES_RETENTION_DAYS} dias.</p>
+          <p class="note" style="margin-top:0.2rem;">Administrador pode adicionar/remover produtos e ajustar valor manualmente no saldo pendente.</p>
           ${pending.length
-        ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="responsive-stack payables-table"><thead><tr><th>Comanda</th><th>Cliente</th><th>Total</th><th>Criado em</th><th>Acoes</th></tr></thead><tbody>${pending
-          .map(
-            (p) =>
-              `<tr><td data-label="Comanda">${esc(p.comandaId)}</td><td data-label="Cliente">${esc(p.customerName)}</td><td data-label="Total">${money(p.total)}</td><td data-label="Criado em">${formatDateTime(p.createdAt)}</td><td data-label="Acoes"><button class="btn ok" data-action="receive-payable" data-id="${p.id}">Marcar Pago</button></td></tr>`
-          )
+        ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="responsive-stack payables-table"><thead><tr><th>Comanda</th><th>Cliente</th><th>Total</th><th>Criado em</th><th>Ajustes</th><th>Acoes</th></tr></thead><tbody>${pending
+          .map((p) => {
+            const adjustments = Array.isArray(p.adjustments) ? p.adjustments : [];
+            const lastAdjustment = adjustments[0] || null;
+            const adjustmentSummary = adjustments.length
+              ? `${adjustments.length} ajuste(s) | Ultimo: ${(Number(lastAdjustment.amountDelta || 0) >= 0 ? "+" : "-") + money(Math.abs(Number(lastAdjustment.amountDelta || 0)))}`
+              : "Sem ajustes";
+            return `<tr><td data-label="Comanda">${esc(p.comandaId)}</td><td data-label="Cliente">${esc(p.customerName)}</td><td data-label="Total">${money(p.total)}</td><td data-label="Criado em">${formatDateTime(p.createdAt)}</td><td data-label="Ajustes"><div>${esc(adjustmentSummary)}</div>${lastAdjustment ? `<div class="note">${esc(lastAdjustment.detail || "-")}</div>` : ""}</td><td data-label="Acoes">${canManage
+                ? `<div class="actions"><button class="btn secondary compact-action" data-action="payable-add-product" data-id="${p.id}">+ Produto</button><button class="btn secondary compact-action" data-action="payable-remove-product" data-id="${p.id}">- Produto</button><button class="btn secondary compact-action" data-action="payable-increase-manual" data-id="${p.id}">+ Valor</button><button class="btn secondary compact-action" data-action="payable-decrease-manual" data-id="${p.id}">- Valor</button><button class="btn ok compact-action" data-action="receive-payable" data-id="${p.id}">Marcar Pago</button></div>`
+                : `<span class="note">Somente admin/dev</span>`}</td></tr>`;
+          })
           .join("")}</tbody></table></div>`
         : `<div class="empty" style="margin-top:0.75rem;">Nenhum fiado pendente.</div>`}
         </div>
         <div class="card">
           <h3>Fiados Pagos</h3>
           ${paid.length
-        ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="responsive-stack payables-table"><thead><tr><th>Comanda</th><th>Cliente</th><th>Total</th><th>Pago em</th><th>Metodo</th></tr></thead><tbody>${paid
+        ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="responsive-stack payables-table"><thead><tr><th>Comanda</th><th>Cliente</th><th>Total</th><th>Pago em</th><th>Metodo</th><th>Ajustes</th></tr></thead><tbody>${paid
           .map(
             (p) =>
-              `<tr><td data-label="Comanda">${esc(p.comandaId)}</td><td data-label="Cliente">${esc(p.customerName)}</td><td data-label="Total">${money(p.total)}</td><td data-label="Pago em">${formatDateTime(p.paidAt)}</td><td data-label="Metodo">${esc(paymentLabel(p.paidMethod || ""))}</td></tr>`
+              `<tr><td data-label="Comanda">${esc(p.comandaId)}</td><td data-label="Cliente">${esc(p.customerName)}</td><td data-label="Total">${money(p.total)}</td><td data-label="Pago em">${formatDateTime(p.paidAt)}</td><td data-label="Metodo">${esc(paymentLabel(p.paidMethod || ""))}</td><td data-label="Ajustes">${Array.isArray(p.adjustments) ? p.adjustments.length : 0}</td></tr>`
           )
           .join("")}</tbody></table></div>`
         : `<div class="empty" style="margin-top:0.75rem;">Sem registros pagos.</div>`}
@@ -4571,6 +4646,7 @@
     const validItemsCount = (comanda.items || []).filter((item) => !item.canceled).length;
     const actor = getCurrentUser();
     const canResolveIndicator = actor && actor.role === "waiter" && hasKitchenItems && kitchenIndicator;
+    const canDeleteComanda = actor && (actor.role === "waiter" || isAdminOrDev(actor));
     const canToggleCollapse = !forceExpanded && !forceCollapsed;
     const draftItems = getWaiterDraftItems(comanda.id);
     const tableRef = comanda.table || "-";
@@ -4674,6 +4750,7 @@
         ? `<div class="actions">
           <button class="btn secondary" data-action="add-comanda-note" data-comanda-id="${comanda.id}">Adicionar observacao</button>
           <button class="btn secondary" data-action="print-comanda" data-comanda-id="${comanda.id}">Ver cupom</button>
+          ${canDeleteComanda ? `<button class="btn danger" data-action="delete-comanda" data-comanda-id="${comanda.id}">Excluir comanda</button>` : ""}
           <button class="btn primary" data-action="toggle-finalize" data-comanda-id="${comanda.id}">${isFinalizeOpen ? "Fechar painel" : "Finalizar comanda"}</button>
         </div>`
         : ""
@@ -6154,9 +6231,185 @@
     render();
   }
 
+  function canManagePayables(actor = currentActor()) {
+    return Boolean(actor && isAdminOrDev(actor));
+  }
+
+  function findPayableById(id) {
+    const key = String(id || "").trim();
+    if (!key) return null;
+    return state.payables.find((entry) => String(entry?.id || "").trim() === key) || null;
+  }
+
+  function applyPayableAdjustment(payable, actor, adjustment) {
+    if (!payable || !actor || !adjustment) return null;
+    const currentTotal = Math.max(0, parseNumber(payable.total || 0));
+    const delta = parseNumber(adjustment.amountDelta || 0);
+    if (!Number.isFinite(delta) || delta === 0) return null;
+    if (delta < 0 && currentTotal + delta < 0) return null;
+
+    const changedAt = isoNow();
+    const nextTotal = Math.max(0, currentTotal + delta);
+    payable.total = nextTotal;
+    payable.updatedAt = changedAt;
+    payable.adjustments = Array.isArray(payable.adjustments) ? payable.adjustments : [];
+    payable.adjustments.unshift({
+      id: `PGA-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      ts: changedAt,
+      type: String(adjustment.type || "fiado_ajuste_manual"),
+      detail: String(adjustment.detail || ""),
+      amountDelta: delta,
+      productId: adjustment.productId !== undefined && adjustment.productId !== null ? Number(adjustment.productId) : null,
+      productName: String(adjustment.productName || ""),
+      qty: Math.max(0, parseNumber(adjustment.qty || 0)),
+      unitPrice: Math.max(0, parseNumber(adjustment.unitPrice || 0)),
+      actorId: actor.id,
+      actorRole: actor.role,
+      actorName: actor.name
+    });
+    return { currentTotal, nextTotal, delta, changedAt };
+  }
+
+  function adjustPayableByManualValue(id, mode = "increase") {
+    const actor = currentActor();
+    if (!canManagePayables(actor)) {
+      alert("Somente administrador/dev pode ajustar fiados.");
+      return;
+    }
+    const payable = findPayableById(id);
+    if (!payable || payable.status !== "pendente") {
+      alert("Fiado nao encontrado ou ja foi pago.");
+      return;
+    }
+
+    const increaseMode = mode !== "decrease";
+    const amountLabel = increaseMode ? "acrescentar" : "descontar";
+    const amountRaw = prompt(`Valor para ${amountLabel} no fiado da comanda ${payable.comandaId}:`, "0");
+    if (amountRaw === null) return;
+    const amount = parseNumber(amountRaw);
+    if (!(amount > 0)) {
+      alert("Informe um valor maior que zero.");
+      return;
+    }
+    const currentTotal = Math.max(0, parseNumber(payable.total || 0));
+    if (!increaseMode && amount > currentTotal) {
+      alert(`Nao e possivel descontar ${money(amount)} porque o saldo atual e ${money(currentTotal)}.`);
+      return;
+    }
+
+    const defaultReason = increaseMode ? "Acrescimo manual no fiado" : "Desconto manual no fiado";
+    const reasonRaw = prompt("Motivo do ajuste manual:", defaultReason);
+    if (reasonRaw === null) return;
+    const reason = String(reasonRaw || "").trim() || defaultReason;
+
+    const delta = increaseMode ? amount : -amount;
+    const result = applyPayableAdjustment(payable, actor, {
+      type: "fiado_ajuste_manual",
+      detail: `${increaseMode ? "Acrescimo" : "Desconto"} manual: ${reason}.`,
+      amountDelta: delta
+    });
+    if (!result) {
+      alert("Nao foi possivel aplicar o ajuste informado.");
+      return;
+    }
+
+    appendAudit({
+      actor,
+      type: "fiado_ajuste_manual",
+      detail:
+        `Fiado da comanda ${payable.comandaId} ajustado manualmente (${increaseMode ? "+" : "-"}${money(amount)}). ` +
+        `Saldo: ${money(result.currentTotal)} -> ${money(result.nextTotal)}. Motivo: ${reason}.`,
+      comandaId: payable.comandaId
+    });
+    saveState();
+    render();
+  }
+
+  function adjustPayableByProduct(id, mode = "add") {
+    const actor = currentActor();
+    if (!canManagePayables(actor)) {
+      alert("Somente administrador/dev pode ajustar fiados.");
+      return;
+    }
+    const payable = findPayableById(id);
+    if (!payable || payable.status !== "pendente") {
+      alert("Fiado nao encontrado ou ja foi pago.");
+      return;
+    }
+
+    const productPrompt = prompt(
+      `Produto (ID ou nome) para ${mode === "remove" ? "remover" : "adicionar"} no fiado da comanda ${payable.comandaId}:`,
+      ""
+    );
+    if (productPrompt === null) return;
+    const product = resolveProductForAdminInput(productPrompt);
+    if (!product) {
+      alert("Produto nao encontrado.");
+      return;
+    }
+
+    const qtyPrompt = prompt("Quantidade:", "1");
+    if (qtyPrompt === null) return;
+    const qty = Math.max(0, Math.floor(parseNumber(qtyPrompt)));
+    if (!(qty > 0)) {
+      alert("Quantidade invalida.");
+      return;
+    }
+
+    const unitPrompt = prompt("Valor unitario para o ajuste:", Number(parseNumber(product.price || 0)).toFixed(2));
+    if (unitPrompt === null) return;
+    const unitPrice = parseNumber(unitPrompt);
+    if (!(unitPrice >= 0)) {
+      alert("Valor unitario invalido.");
+      return;
+    }
+
+    const amount = qty * unitPrice;
+    if (!(amount > 0)) {
+      alert("Ajuste zerado. Informe quantidade/valor maiores que zero.");
+      return;
+    }
+    const currentTotal = Math.max(0, parseNumber(payable.total || 0));
+    if (mode === "remove" && amount > currentTotal) {
+      alert(`Nao e possivel remover ${money(amount)} porque o saldo atual e ${money(currentTotal)}.`);
+      return;
+    }
+
+    const delta = mode === "remove" ? -amount : amount;
+    const actionLabel = mode === "remove" ? "Remocao" : "Adicao";
+    const result = applyPayableAdjustment(payable, actor, {
+      type: mode === "remove" ? "fiado_ajuste_produto_remove" : "fiado_ajuste_produto_add",
+      detail: `${actionLabel} de produto no fiado: ${product.name} x${qty} (${money(unitPrice)} un).`,
+      amountDelta: delta,
+      productId: product.id,
+      productName: product.name,
+      qty,
+      unitPrice
+    });
+    if (!result) {
+      alert("Nao foi possivel aplicar o ajuste por produto.");
+      return;
+    }
+
+    appendAudit({
+      actor,
+      type: mode === "remove" ? "fiado_ajuste_produto_remove" : "fiado_ajuste_produto_add",
+      detail:
+        `Fiado da comanda ${payable.comandaId} ${mode === "remove" ? "teve remocao" : "recebeu adicao"} ` +
+        `de ${product.name} x${qty} (${money(unitPrice)} un). Saldo: ${money(result.currentTotal)} -> ${money(result.nextTotal)}.`,
+      comandaId: payable.comandaId
+    });
+    saveState();
+    render();
+  }
+
   function receivePayable(id) {
     const actor = currentActor();
-    const payable = state.payables.find((p) => p.id === id);
+    if (!canManagePayables(actor)) {
+      alert("Somente administrador/dev pode marcar fiado como pago.");
+      return;
+    }
+    const payable = findPayableById(id);
     if (!payable || payable.status === "pago") return;
 
     const msg = "Metodo de pagamento (dinheiro, maquineta_debito, maquineta_credito, pix):";
@@ -6165,6 +6418,7 @@
 
     payable.status = "pago";
     payable.paidAt = isoNow();
+    payable.updatedAt = payable.paidAt;
     payable.paidMethod = method;
     appendAudit({ actor, type: "fiado_pago", detail: `Fiado da comanda ${payable.comandaId} marcado como pago.` });
     saveState();
@@ -6778,6 +7032,73 @@
     render();
   }
 
+  function deleteComandaPermanently(comandaId) {
+    const actor = currentActor();
+    if (!actor || (actor.role !== "waiter" && !isAdminOrDev(actor))) {
+      alert("Somente garcom ou administrador podem excluir comanda.");
+      return;
+    }
+
+    const comanda = findOpenComandaForActor(comandaId, actor);
+    if (!comanda) return;
+
+    const restockRows = [];
+    let restoredQty = 0;
+    let restoredProducts = 0;
+    let notFoundProducts = 0;
+    for (const item of comanda.items || []) {
+      if (!item || item.canceled) continue;
+      const qty = Math.max(0, parseNumber(item.qty || 0));
+      if (!(qty > 0)) continue;
+      const product = state.products.find((entry) => Number(entry.id) === Number(item.productId));
+      if (!product) {
+        notFoundProducts += 1;
+        continue;
+      }
+      restockRows.push({ product, qty });
+      restoredQty += qty;
+      restoredProducts += 1;
+    }
+
+    const confirmText =
+      `Excluir completamente a comanda ${comanda.id}?\n` +
+      `Mesa/ref: ${comanda.table || "-"}\n` +
+      `Cliente: ${comanda.customer || "-"}\n` +
+      `Itens ativos: ${(comanda.items || []).filter((item) => item && !item.canceled).length}\n` +
+      `Reposicao estimada no estoque: ${restoredQty} unidade(s).`;
+    if (!confirm(confirmText)) return;
+
+    const authActor = confirmConnectedAccountCredentials(`excluir a comanda ${comanda.id}`, {
+      allowedRoles: ["waiter", "admin", "dev"]
+    });
+    if (!authActor) return;
+
+    for (const row of restockRows) {
+      row.product.stock = Math.max(0, parseNumber(row.product.stock || 0) + row.qty);
+    }
+
+    state.openComandas = state.openComandas.filter((entry) => String(entry?.id || "") !== String(comanda.id || ""));
+    clearWaiterDraftItems(comanda.id);
+    delete uiState.finalizeOpenByComanda[comanda.id];
+    delete uiState.waiterCollapsedByComanda[comanda.id];
+    if (uiState.waiterActiveComandaId === comanda.id) uiState.waiterActiveComandaId = null;
+    if (uiState.adminInlineEditComandaId === comanda.id) uiState.adminInlineEditComandaId = null;
+    if (uiState.comandaDetailsId === comanda.id) uiState.comandaDetailsId = null;
+
+    appendAudit({
+      actor: authActor,
+      type: "comanda_excluida",
+      comandaId: comanda.id,
+      detail:
+        `Comanda ${comanda.id} excluida permanentemente. ` +
+        `Estoque reposto: ${restoredQty} unidade(s) em ${restoredProducts} item(ns).` +
+        `${notFoundProducts ? ` ${notFoundProducts} item(ns) sem produto vinculado para reposicao.` : ""}`
+    });
+
+    saveState();
+    render();
+  }
+
   function findComandaForAdminEdition(comandaId) {
     const actor = currentActor();
     if (!isAdminOrDev(actor)) {
@@ -7250,15 +7571,18 @@
     };
 
     if (fiadoAmount > 0) {
+      const createdAt = isoNow();
       state.payables.push({
         id: `PG-${String(state.seq.payable++).padStart(5, "0")}`,
         comandaId: comanda.id,
         customerName: fiadoCustomer,
         total: fiadoAmount,
         status: "pendente",
-        createdAt: isoNow(),
+        createdAt,
+        updatedAt: createdAt,
         paidAt: null,
-        paidMethod: null
+        paidMethod: null,
+        adjustments: []
       });
     }
 
@@ -7819,6 +8143,26 @@
         return;
       }
 
+      if (action === "payable-add-product") {
+        adjustPayableByProduct(button.dataset.id, "add");
+        return;
+      }
+
+      if (action === "payable-remove-product") {
+        adjustPayableByProduct(button.dataset.id, "remove");
+        return;
+      }
+
+      if (action === "payable-increase-manual") {
+        adjustPayableByManualValue(button.dataset.id, "increase");
+        return;
+      }
+
+      if (action === "payable-decrease-manual") {
+        adjustPayableByManualValue(button.dataset.id, "decrease");
+        return;
+      }
+
       if (action === "save-kitchen-printer-config") {
         saveKitchenPrinterConfigFromUi();
         return;
@@ -7888,6 +8232,11 @@
 
       if (action === "print-comanda") {
         printComanda(button.dataset.comandaId);
+        return;
+      }
+
+      if (action === "delete-comanda") {
+        deleteComandaPermanently(button.dataset.comandaId);
         return;
       }
 
