@@ -106,7 +106,9 @@
     },
     deleteComandaAuth: {
       open: false,
-      comandaId: ""
+      comandaId: "",
+      loginDraft: "",
+      passwordDraft: ""
     },
     quickSalePaidConfirm: true,
     printerPrefs: loadPrinterPrefs(),
@@ -5261,6 +5263,10 @@
   }
 
   function render() {
+    const deleteAuthFormBeforeRender = document.querySelector("#delete-comanda-auth-form");
+    if (deleteAuthFormBeforeRender) {
+      syncDeleteComandaAuthDraftFromForm(deleteAuthFormBeforeRender);
+    }
     const activeEl = document.activeElement;
     const activeSelector = activeEl?.id
       ? `#${activeEl.id}`
@@ -5935,7 +5941,9 @@
   function closeDeleteComandaAuthModal(options = {}) {
     uiState.deleteComandaAuth = {
       open: false,
-      comandaId: ""
+      comandaId: "",
+      loginDraft: "",
+      passwordDraft: ""
     };
     if (options.skipRender !== true) {
       render();
@@ -5966,7 +5974,9 @@
 
     uiState.deleteComandaAuth = {
       open: true,
-      comandaId: String(comanda.id || "")
+      comandaId: String(comanda.id || ""),
+      loginDraft: String(actor.login || ""),
+      passwordDraft: ""
     };
     render();
   }
@@ -5978,6 +5988,9 @@
     if (!actor || (actor.role !== "waiter" && !isAdminOrDev(actor))) return "";
     const comanda = findOpenComandaForActor(authState.comandaId, actor, { silent: true });
     if (!comanda) return "";
+    const loginDraft =
+      typeof authState.loginDraft === "string" ? authState.loginDraft : String(actor.login || "");
+    const passwordDraft = typeof authState.passwordDraft === "string" ? authState.passwordDraft : "";
 
     const impact = computeComandaDeletionImpact(comanda);
     return `
@@ -5996,11 +6009,26 @@
               <div class="grid cols-2">
                 <div class="field">
                   <label>Login da conta conectada</label>
-                  <input name="login" required value="${esc(String(actor.login || ""))}" placeholder="Digite seu login" />
+                  <input
+                    name="login"
+                    data-role="delete-comanda-auth-login"
+                    required
+                    value="${esc(loginDraft)}"
+                    placeholder="Digite seu login"
+                    autocomplete="username"
+                  />
                 </div>
                 <div class="field">
                   <label>Senha da conta conectada</label>
-                  <input name="password" type="password" required placeholder="Digite sua senha" />
+                  <input
+                    name="password"
+                    data-role="delete-comanda-auth-password"
+                    type="password"
+                    required
+                    value="${esc(passwordDraft)}"
+                    placeholder="Digite sua senha"
+                    autocomplete="current-password"
+                  />
                 </div>
               </div>
             </div>
@@ -6015,6 +6043,7 @@
   }
 
   function submitDeleteComandaAuth(form) {
+    syncDeleteComandaAuthDraftFromForm(form);
     const actor = currentActor();
     if (!actor || (actor.role !== "waiter" && !isAdminOrDev(actor))) {
       closeDeleteComandaAuthModal();
@@ -6046,6 +6075,12 @@
 
     closeDeleteComandaAuthModal({ skipRender: true });
     deleteComandaPermanently(comanda.id, actor);
+  }
+
+  function syncDeleteComandaAuthDraftFromForm(form) {
+    if (!form || !uiState.deleteComandaAuth?.open) return;
+    uiState.deleteComandaAuth.loginDraft = String(form.login?.value || "");
+    uiState.deleteComandaAuth.passwordDraft = String(form.password?.value || "");
   }
 
   function submitComandaItemSelector(form) {
@@ -8978,6 +9013,11 @@
   app.addEventListener("input", (event) => {
     try {
       const target = event.target;
+      if (target.closest("#delete-comanda-auth-form")) {
+        const form = target.closest("#delete-comanda-auth-form");
+        syncDeleteComandaAuthDraftFromForm(form);
+        return;
+      }
       if (target.matches('[data-role="payment-amount"]')) {
         const form = target.closest('form[data-role="finalize-form"]');
         if (form) updateFinalizePaymentUi(form);
