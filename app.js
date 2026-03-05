@@ -10,6 +10,8 @@
   const HISTORY_RETENTION_DAYS = 90;
   const PAYABLES_RETENTION_DAYS = 350;
   const CASH_HTML_REPORTS_LIMIT = 120;
+  const FINANCE_CYCLE_DAYS = 30;
+  const FINANCE_CYCLE_REPORTS_LIMIT = 120;
   const FINAL_CLIENT_PREP_FLAG = "final_client_ready_v1";
   const FINAL_CLIENT_PREP_MARKER = "final_client_prepared_at";
   const FINAL_CLIENT_PREP_SIGNATURE_KEY = "final_client_prep_signature";
@@ -153,6 +155,12 @@
     const oneYearAhead = Date.now() + 365 * 24 * 60 * 60 * 1000;
     if (ts > oneYearAhead) return 0;
     return ts;
+  }
+
+  function normalizeIsoTimestamp(value) {
+    const ts = parseUpdatedAtTimestamp(value);
+    if (!ts) return "";
+    return new Date(ts).toISOString();
   }
 
   function comandaLatestEventTimestamp(comanda) {
@@ -521,10 +529,25 @@
     const latest = backups[backups.length - 1];
     const deletedProductIds = normalizeDeletedIdList(meta.deletedProductIds);
     const deletedUserIds = normalizeDeletedIdList(meta.deletedUserIds);
+    const deletedProductSet = new Set(deletedProductIds.map(id => String(id)));
+    const deletedUserSet = new Set(deletedUserIds.map(id => String(id)));
+    // Recovery é somente aditivo — NÃO sobrescreve produtos/users existentes
+    const currentUserIds = new Set(
+      (Array.isArray(targetState.users) ? targetState.users : [])
+        .map(u => String(u?.id ?? "").trim()).filter(Boolean)
+    );
+    const currentProductIds = new Set(
+      (Array.isArray(targetState.products) ? targetState.products : [])
+        .map(p => String(p?.id ?? "").trim()).filter(Boolean)
+    );
+    const recoveredUsers = (Array.isArray(latest.users) ? latest.users : [])
+      .filter(u => { const id = String(u?.id ?? "").trim(); return id && !currentUserIds.has(id) && !deletedUserSet.has(id); });
+    const recoveredProducts = (Array.isArray(latest.products) ? latest.products : [])
+      .filter(p => { const id = String(p?.id ?? "").trim(); return id && !currentProductIds.has(id) && !deletedProductSet.has(id); });
     return {
       ...targetState,
-      users: mergedRowsById(targetState.users, latest.users, deletedUserIds),
-      products: mergedRowsById(targetState.products, latest.products, deletedProductIds),
+      users: [...(Array.isArray(targetState.users) ? targetState.users : []), ...recoveredUsers],
+      products: [...(Array.isArray(targetState.products) ? targetState.products : []), ...recoveredProducts],
       meta: {
         ...meta,
         [CATALOG_BACKUPS_META_KEY]: backups
@@ -590,16 +613,33 @@
       if (deletedSet.has(id)) continue;
       if (!allowRemoteOnly && !map.has(id)) continue;
       const previous = map.get(id);
-      map.set(
-        id,
-        pickRowByTimestamp(previous, comanda, {
-          getTimestamp: (row) => {
-            const lastEventAt = Array.isArray(row?.events) && row.events.length ? row.events[row.events.length - 1]?.ts : null;
-            return row?.closedAt || lastEventAt || row?.createdAt || "";
-          },
-          preferLocal: options.preferLocal !== false
-        })
-      );
+      const merged = pickRowByTimestamp(previous, comanda, {
+        getTimestamp: (row) => {
+          const lastEventAt = Array.isArray(row?.events) && row.events.length ? row.events[row.events.length - 1]?.ts : null;
+          return row?.closedAt || lastEventAt || row?.createdAt || "";
+        },
+        preferLocal: options.preferLocal !== false
+      });
+      // Item-level merge: preserva itens de ambos os lados para evitar sumico
+      if (previous && comanda && merged) {
+        const prevItems = Array.isArray(previous.items) ? previous.items : [];
+        const remoteItems = Array.isArray(comanda.items) ? comanda.items : [];
+        if (prevItems.length > 0 && remoteItems.length > 0) {
+          const itemMap = new Map();
+          for (const item of prevItems) { if (item?.id) itemMap.set(String(item.id), item); }
+          for (const item of remoteItems) {
+            const itemId = String(item?.id || "");
+            if (!itemId) continue;
+            if (!itemMap.has(itemId)) { itemMap.set(itemId, item); continue; }
+            const existing = itemMap.get(itemId);
+            const existingTs = new Date(existing?.waiterVisualUpdatedAt || existing?.kitchenReceivedAt || 0).getTime() || 0;
+            const incomingTs = new Date(item?.waiterVisualUpdatedAt || item?.kitchenReceivedAt || 0).getTime() || 0;
+            if (incomingTs > existingTs) itemMap.set(itemId, item);
+          }
+          merged.items = [...itemMap.values()];
+        }
+      }
+      map.set(id, merged);
     }
     return [...map.values()];
   }
@@ -698,6 +738,20 @@
     return best;
   }
 
+  function selectLatestTimestampIso(...values) {
+    let best = "";
+    let bestTs = 0;
+    for (const value of values) {
+      const normalized = normalizeIsoTimestamp(value);
+      if (!normalized) continue;
+      const ts = parseUpdatedAtTimestamp(normalized);
+      if (!ts || ts <= bestTs) continue;
+      best = normalized;
+      bestTs = ts;
+    }
+    return best;
+  }
+
   function applyOperationalResetCutoff(targetState, cutoffIso) {
     if (!targetState || typeof targetState !== "object") return;
     const normalizedCutoff = normalizeOperationalResetAt(cutoffIso);
@@ -746,9 +800,13 @@
     targetState.cashHtmlReports = (Array.isArray(targetState.cashHtmlReports) ? targetState.cashHtmlReports : []).filter((row) =>
       tsAtOrAfterCutoff(row?.closedAt || row?.createdAt)
     );
+    targetState.financeCycleReports = (Array.isArray(targetState.financeCycleReports) ? targetState.financeCycleReports : []).filter((row) =>
+      tsAtOrAfterCutoff(row?.endAt || row?.generatedAt)
+    );
 
     targetState.meta = targetState.meta || {};
     targetState.meta.operationalResetAt = normalizedCutoff;
+    targetState.meta.financeCycleStartedAt = tsAtOrAfterCutoff(targetState.meta.financeCycleStartedAt) ? normalizeIsoTimestamp(targetState.meta.financeCycleStartedAt) : "";
   }
 
   function stateFootprint(source) {
@@ -760,6 +818,7 @@
     const auditLog = Array.isArray(source?.auditLog) ? source.auditLog.length : 0;
     const payables = Array.isArray(source?.payables) ? source.payables.length : 0;
     const cashHtmlReports = Array.isArray(source?.cashHtmlReports) ? source.cashHtmlReports.length : 0;
+    const financeCycleReports = Array.isArray(source?.financeCycleReports) ? source.financeCycleReports.length : 0;
     const cookHistory = Array.isArray(source?.cookHistory) ? source.cookHistory.length : 0;
     return {
       users,
@@ -770,15 +829,16 @@
       auditLog,
       payables,
       cashHtmlReports,
+      financeCycleReports,
       cookHistory,
       catalogRows: users + products,
-      operationalRows: openComandas + closedComandas + history90 + auditLog + payables + cashHtmlReports + cookHistory
+      operationalRows: openComandas + closedComandas + history90 + auditLog + payables + cashHtmlReports + financeCycleReports + cookHistory
     };
   }
 
   function isLikelyResetState(source) {
     const fp = stateFootprint(source);
-    return fp.users <= 1 && fp.products === 0 && fp.openComandas === 0 && fp.closedComandas === 0 && fp.history90 === 0 && fp.payables === 0 && fp.cashHtmlReports === 0;
+    return fp.users <= 1 && fp.products === 0 && fp.openComandas === 0 && fp.closedComandas === 0 && fp.history90 === 0 && fp.payables === 0 && fp.cashHtmlReports === 0 && fp.financeCycleReports === 0;
   }
 
   function shouldForceRemotePreference(localCandidate, remoteCandidate) {
@@ -797,6 +857,7 @@
       preferLocal = false;
     }
     const operationalResetAt = selectLatestOperationalResetAt(localMeta.operationalResetAt, remoteMeta.operationalResetAt);
+    const financeCycleStartedAt = selectLatestTimestampIso(localMeta.financeCycleStartedAt, remoteMeta.financeCycleStartedAt);
     const catalogBackups = mergeCatalogBackups(localMeta[CATALOG_BACKUPS_META_KEY], remoteMeta[CATALOG_BACKUPS_META_KEY]);
     const deletedProductIdsRaw = normalizeDeletedIdList([
       ...(Array.isArray(localMeta.deletedProductIds) ? localMeta.deletedProductIds : []),
@@ -856,6 +917,11 @@
       preferLocal,
       allowRemoteOnly: allowRemoteOperationalInsert
     });
+    const mergedFinanceCycleReports = mergeRowsByIdWithTimestamp(localState?.financeCycleReports, remoteState?.financeCycleReports, {
+      getTimestamp: (row) => row?.endAt || row?.generatedAt || "",
+      preferLocal,
+      allowRemoteOnly: allowRemoteOperationalInsert
+    });
     const mergedAudit = mergeAuditRows(localState?.auditLog, remoteState?.auditLog);
 
     const merged = {
@@ -875,6 +941,7 @@
       cookHistory: mergedCookHistory,
       payables: mergedPayables,
       cashHtmlReports: mergedCashHtmlReports,
+      financeCycleReports: mergedFinanceCycleReports,
       auditLog: mergedAudit,
       meta: {
         ...(preferLocal ? remoteState?.meta || {} : localState?.meta || {}),
@@ -883,7 +950,8 @@
         deletedProductIds,
         deletedUserIds,
         deletedComandaIds,
-        operationalResetAt
+        operationalResetAt,
+        financeCycleStartedAt
       },
       cash: { ...(preferLocal ? remoteState?.cash || {} : localState?.cash || {}), ...(preferLocal ? localState?.cash || {} : remoteState?.cash || {}) }
     };
@@ -919,6 +987,7 @@
       openComandas: [],
       closedComandas: [],
       cashHtmlReports: [],
+      financeCycleReports: [],
       cookHistory: [],
       payables: [],
       auditLog: [],
@@ -944,6 +1013,7 @@
         deletedProductIds: [],
         deletedUserIds: [],
         deletedComandaIds: [],
+        financeCycleStartedAt: "",
         operationalResetAt: "",
         [FINAL_CLIENT_PREP_FLAG]: true,
         [FINAL_CLIENT_PREP_MARKER]: isoNow(),
@@ -1012,6 +1082,53 @@
     state.cashHtmlReports = normalized.slice(0, CASH_HTML_REPORTS_LIMIT);
   }
 
+  function normalizeFinanceCycleReportRecord(entry, fallbackId = 0) {
+    const parsed = entry && typeof entry === "object" ? entry : {};
+    const startAt = normalizeIsoTimestamp(parsed.startAt);
+    const endAt = normalizeIsoTimestamp(parsed.endAt);
+    const generatedAt = normalizeIsoTimestamp(parsed.generatedAt || parsed.createdAt || parsed.endAt || parsed.startAt) || isoNow();
+    const grossRevenue = Math.max(0, parseNumber(parsed.grossRevenue || 0));
+    const totalCost = Math.max(0, parseNumber(parsed.totalCost || 0));
+    const netProfit = parseNumber(parsed.netProfit !== undefined ? parsed.netProfit : grossRevenue - totalCost);
+    const commandasCount = Math.max(0, Number(parsed.commandasCount || 0));
+    const totalItemsSold = Math.max(0, parseNumber(parsed.totalItemsSold || 0));
+    const topProducts = (Array.isArray(parsed.topProducts) ? parsed.topProducts : [])
+      .filter((row) => row && typeof row === "object")
+      .map((row, idx) => ({
+        id: String(row.id || `FRP-${fallbackId + 1}-${idx + 1}`),
+        name: String(row.name || ""),
+        soldQty: Math.max(0, parseNumber(row.soldQty || 0)),
+        revenue: Math.max(0, parseNumber(row.revenue || 0)),
+        profit: parseNumber(row.profit || 0)
+      }))
+      .slice(0, 10);
+    return {
+      id: String(parsed.id || `FCR-${fallbackId + 1}`),
+      startAt,
+      endAt,
+      generatedAt,
+      commandasCount,
+      totalItemsSold,
+      grossRevenue,
+      totalCost,
+      netProfit,
+      topProducts
+    };
+  }
+
+  function pruneFinanceCycleReports(state) {
+    const threshold = Date.now() - HISTORY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    const normalized = (state.financeCycleReports || [])
+      .map((entry, idx) => normalizeFinanceCycleReportRecord(entry, idx))
+      .filter((entry) => {
+        const referenceAt = new Date(entry.endAt || entry.generatedAt || 0).getTime();
+        if (!Number.isFinite(referenceAt)) return true;
+        return referenceAt >= threshold;
+      })
+      .sort((a, b) => new Date(b.endAt || b.generatedAt || 0) - new Date(a.endAt || a.generatedAt || 0));
+    state.financeCycleReports = normalized.slice(0, FINANCE_CYCLE_REPORTS_LIMIT);
+  }
+
   function hasSystemTestMarker(value) {
     const text = String(value || "").trim().toLowerCase();
     if (!text) return false;
@@ -1058,6 +1175,7 @@
     targetState.payables = Array.isArray(targetState.payables) ? targetState.payables : [];
     targetState.cookHistory = Array.isArray(targetState.cookHistory) ? targetState.cookHistory : [];
     targetState.cashHtmlReports = Array.isArray(targetState.cashHtmlReports) ? targetState.cashHtmlReports : [];
+    targetState.financeCycleReports = Array.isArray(targetState.financeCycleReports) ? targetState.financeCycleReports : [];
     targetState.meta = targetState.meta || {};
 
     const removedUserIds = new Set();
@@ -1388,7 +1506,12 @@
     const normalized = {
       ...product,
       id: Number(product.id || fallbackId),
-      category: effectiveCategory
+      category: effectiveCategory,
+      price: Number(product.price ?? 0),
+      stock: Number(product.stock ?? 0),
+      cost: Number(product.cost ?? 0),
+      prepTime: Number(product.prepTime ?? 0),
+      name: String(product.name || "")
     };
     normalized.subcategory = normalizeProductSubcategory(normalized);
     normalized.available = product.available !== false;
@@ -1455,6 +1578,9 @@
       cashHtmlReports: Array.isArray(parsed.cashHtmlReports)
         ? parsed.cashHtmlReports.map((entry, idx) => normalizeCashHtmlReportRecord(entry, idx))
         : [],
+      financeCycleReports: Array.isArray(parsed.financeCycleReports)
+        ? parsed.financeCycleReports.map((entry, idx) => normalizeFinanceCycleReportRecord(entry, idx))
+        : [],
       cookHistory: Array.isArray(parsed.cookHistory) ? parsed.cookHistory : [],
       payables: Array.isArray(parsed.payables) ? parsed.payables.map((entry, idx) => normalizePayableRecord(entry, idx)) : [],
       auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog : [],
@@ -1472,6 +1598,7 @@
         deletedProductIds: deletedProductIdsRaw,
         deletedUserIds: deletedUserIdsRaw,
         deletedComandaIds: deletedComandaIdsRaw,
+        financeCycleStartedAt: normalizeIsoTimestamp(parsed.meta?.financeCycleStartedAt),
         operationalResetAt: normalizeOperationalResetAt(parsed.meta?.operationalResetAt),
         [FINAL_CLIENT_PREP_FLAG]: parsed.meta?.[FINAL_CLIENT_PREP_FLAG] === true,
         [FINAL_CLIENT_PREP_MARKER]:
@@ -1505,6 +1632,7 @@
     pruneHistory(recovered);
     prunePayables(recovered);
     pruneCashHtmlReports(recovered);
+    pruneFinanceCycleReports(recovered);
     return recovered;
   }
 
@@ -1628,6 +1756,10 @@
     lastSyncError: ""
   };
 
+  let stateVersion = 0;
+  let lastRenderedVersion = -1;
+  let lastPushAt = 0;
+
   function adoptIncomingState(source) {
     if (!source || typeof source !== "object" || Array.isArray(source)) {
       return;
@@ -1637,6 +1769,7 @@
       state = normalizeStateShape(source);
       state.session = { userId: null };
       sessionUserId = currentSession;
+      stateVersion++;
     } catch (err) {
       console.error("[adoptIncomingState] Falha ao normalizar estado recebido:", err);
     }
@@ -1646,14 +1779,17 @@
     const touchMeta = options.touchMeta !== false;
     state.meta = state.meta || {};
     synchronizeCashOpenedAt(state);
+    rollFinance30DayCycles(state, { nowIso: isoNow() });
     ensureCatalogBackup(state, "save");
     if (touchMeta) {
       state.meta.updatedAt = isoNow();
     }
+    stateVersion++;
     state.session = { userId: null };
     pruneHistory(state);
     prunePayables(state);
     pruneCashHtmlReports(state);
+    pruneFinanceCycleReports(state);
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     } catch (storageErr) {
@@ -1663,6 +1799,7 @@
         state.history90 = (state.history90 || []).slice(0, 30);
         state.cookHistory = (state.cookHistory || []).slice(0, 200);
         state.cashHtmlReports = (state.cashHtmlReports || []).slice(0, 30);
+        state.financeCycleReports = (state.financeCycleReports || []).slice(0, 30);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       } catch (retryErr) {
         console.error("[saveState] Falha ao salvar mesmo apos pruning:", retryErr);
@@ -1757,10 +1894,28 @@
         updated_at: isoNow(),
         payload: mergedForCloud
       };
-      const { error } = await client.from("restobar_state").upsert(payload);
+      // Optimistic locking: só atualiza se updated_at não mudou desde o read
+      const remoteUpdatedAt = remoteData?.updated_at || null;
+      let writeResult;
+      if (remoteUpdatedAt) {
+        writeResult = await client.from("restobar_state")
+          .update({ updated_at: payload.updated_at, payload: payload.payload })
+          .eq("id", "main")
+          .eq("updated_at", remoteUpdatedAt)
+          .select();
+      } else {
+        writeResult = await client.from("restobar_state").upsert(payload).select();
+      }
+      const { error, data: writeData } = writeResult;
       if (error) {
         throw error;
       }
+      // Se update não afetou nenhuma linha, outro device escreveu → re-sync
+      if (remoteUpdatedAt && Array.isArray(writeData) && writeData.length === 0) {
+        supabaseCtx.syncQueued = true;
+        return;
+      }
+      lastPushAt = Date.now();
       adoptIncomingState(mergedForCloud);
       state.meta.lastCloudSyncAt = isoNow();
       try {
@@ -1811,7 +1966,7 @@
           setSupabaseStatus("aviso", "Pull remoto ignorado para evitar sobrescrita destrutiva do historico local.");
           return;
         }
-        const incomingMerged = mergeStateForCloud(data.payload, state);
+        const incomingMerged = mergeStateForCloud(state, data.payload);
         const incomingRecovered = applyCatalogBackupRecovery(incomingMerged, state, data.payload);
         ensureCatalogBackup(incomingRecovered, "pull");
         adoptIncomingState(incomingRecovered);
@@ -1902,6 +2057,8 @@
   }
 
   function debouncedPullFromSupabase() {
+    // Ignora pulls logo após o próprio push (evita pull redundante)
+    if (Date.now() - lastPushAt < 2000) return;
     if (supabaseCtx.pullDebounceTimer) {
       clearTimeout(supabaseCtx.pullDebounceTimer);
     }
@@ -3036,8 +3193,8 @@
           .map((p) => {
             const customerName = String(p.customerName || "").trim() || "-";
             return `<tr data-payable-id="${esc(p.id)}" class="payable-row"><td data-label="Comanda"><div class="payable-comanda-cell"><b>${esc(p.comandaId)}</b></div></td><td data-label="Cliente">${esc(customerName)}</td><td data-label="Total pendente"><b>${money(p.total)}</b></td><td data-label="Criado em">${formatDate(p.createdAt)}</td><td data-label="Acoes">${canManage
-                ? `<div class="actions payable-actions"><button class="btn secondary compact-action" type="button" data-action="open-comanda-edit-flow" data-comanda-id="${esc(p.comandaId)}">Editar</button><button class="btn ok compact-action" type="button" data-action="receive-payable" data-id="${esc(p.id)}">Marcar como pago</button></div>`
-                : `<span class="note">Somente admin/dev</span>`}</td></tr>`;
+              ? `<div class="actions payable-actions"><button class="btn secondary compact-action" type="button" data-action="open-comanda-edit-flow" data-comanda-id="${esc(p.comandaId)}">Editar</button><button class="btn ok compact-action" type="button" data-action="receive-payable" data-id="${esc(p.id)}">Marcar como pago</button></div>`
+              : `<span class="note">Somente admin/dev</span>`}</td></tr>`;
           })
           .join("")}</tbody></table></div>`
         : `<div class="empty" style="margin-top:0.75rem;">Nenhum fiado pendente.</div>`}
@@ -3058,17 +3215,24 @@
     `;
   }
 
-  function allFinalizedComandasForFinance() {
-    const fromHistory = state.history90.flatMap((h) => (h.commandas || []).filter((c) => c.status === "finalizada"));
-    const current = state.closedComandas.filter((c) => c.status === "finalizada");
-    return [...fromHistory, ...current];
+  function financeComandaTimestamp(comanda) {
+    return parseUpdatedAtTimestamp(comanda?.closedAt || comanda?.createdAt);
   }
 
-  function computeFinance() {
-    const rows = allFinalizedComandasForFinance();
+  function financeRowsWithTimestamp(sourceState = state) {
+    const fromHistory = (sourceState.history90 || []).flatMap((h) => (h.commandas || []).filter((c) => c.status === "finalizada"));
+    const current = (sourceState.closedComandas || []).filter((c) => c.status === "finalizada");
+    return dedupeComandasById([...fromHistory, ...current])
+      .map((comanda) => ({ comanda, ts: financeComandaTimestamp(comanda) }))
+      .filter((row) => Number(row.ts || 0) > 0)
+      .sort((a, b) => a.ts - b.ts);
+  }
+
+  function computeFinanceFromRows(rows) {
     const byProduct = new Map();
     let grossRevenue = 0;
     let totalCost = 0;
+    let totalItemsSold = 0;
 
     for (const comanda of rows) {
       for (const item of comanda.items || []) {
@@ -3082,6 +3246,7 @@
 
         grossRevenue += revenue;
         totalCost += itemCost;
+        totalItemsSold += qty;
 
         const key = item.productId || item.name;
         const existing = byProduct.get(key) || {
@@ -3108,15 +3273,150 @@
       grossRevenue,
       totalCost,
       netProfit: grossRevenue - totalCost,
+      totalItemsSold,
       perProduct,
       topProfit,
       topSales
     };
   }
 
+  function createFinanceCycleReportRecord(startAt, endAt, rows, metrics) {
+    const startTs = parseUpdatedAtTimestamp(startAt);
+    const endTs = parseUpdatedAtTimestamp(endAt);
+    return normalizeFinanceCycleReportRecord({
+      id: `FCR-${startTs || Date.now()}-${endTs || Date.now()}`,
+      startAt: normalizeIsoTimestamp(startAt),
+      endAt: normalizeIsoTimestamp(endAt),
+      generatedAt: isoNow(),
+      commandasCount: rows.length,
+      totalItemsSold: metrics.totalItemsSold,
+      grossRevenue: metrics.grossRevenue,
+      totalCost: metrics.totalCost,
+      netProfit: metrics.netProfit,
+      topProducts: metrics.topSales.map((row, idx) => ({
+        id: `FCRP-${startTs || 0}-${idx + 1}`,
+        name: row.name,
+        soldQty: row.soldQty,
+        revenue: row.revenue,
+        profit: row.profit
+      }))
+    });
+  }
+
+  function upsertFinanceCycleReport(targetState, report) {
+    targetState.financeCycleReports = Array.isArray(targetState.financeCycleReports) ? targetState.financeCycleReports : [];
+    const key = `${String(report.startAt || "")}|${String(report.endAt || "")}`;
+    const idx = targetState.financeCycleReports.findIndex((entry) => `${String(entry?.startAt || "")}|${String(entry?.endAt || "")}` === key);
+    if (idx < 0) {
+      targetState.financeCycleReports.push(report);
+      return true;
+    }
+    const currentTs = parseUpdatedAtTimestamp(targetState.financeCycleReports[idx]?.generatedAt);
+    const incomingTs = parseUpdatedAtTimestamp(report.generatedAt);
+    if (incomingTs > currentTs) {
+      targetState.financeCycleReports[idx] = report;
+      return true;
+    }
+    return false;
+  }
+
+  function rollFinance30DayCycles(targetState, options = {}) {
+    if (!targetState || typeof targetState !== "object") return false;
+    targetState.meta = targetState.meta || {};
+    targetState.financeCycleReports = Array.isArray(targetState.financeCycleReports) ? targetState.financeCycleReports : [];
+    const nowTs = parseUpdatedAtTimestamp(options.nowIso || isoNow()) || Date.now();
+    const cycleMs = FINANCE_CYCLE_DAYS * 24 * 60 * 60 * 1000;
+    const rows = financeRowsWithTimestamp(targetState);
+    let changed = false;
+
+    if (!rows.length) {
+      if (targetState.meta.financeCycleStartedAt) {
+        targetState.meta.financeCycleStartedAt = "";
+        changed = true;
+      }
+      return changed;
+    }
+
+    let cycleStartTs = parseUpdatedAtTimestamp(targetState.meta.financeCycleStartedAt);
+    if (!cycleStartTs) {
+      cycleStartTs = rows[0].ts;
+      targetState.meta.financeCycleStartedAt = new Date(cycleStartTs).toISOString();
+      changed = true;
+    }
+    if (!cycleStartTs) return changed;
+
+    while (nowTs >= cycleStartTs + cycleMs) {
+      const cycleEndTs = cycleStartTs + cycleMs;
+      const cycleRows = rows.filter((row) => row.ts >= cycleStartTs && row.ts < cycleEndTs).map((row) => row.comanda);
+      if (cycleRows.length) {
+        const cycleMetrics = computeFinanceFromRows(cycleRows);
+        const report = createFinanceCycleReportRecord(new Date(cycleStartTs).toISOString(), new Date(cycleEndTs).toISOString(), cycleRows, cycleMetrics);
+        if (upsertFinanceCycleReport(targetState, report)) changed = true;
+      }
+      const nextRow = rows.find((row) => row.ts >= cycleEndTs);
+      if (nextRow) {
+        cycleStartTs = nextRow.ts;
+        const nextStartIso = new Date(cycleStartTs).toISOString();
+        if (targetState.meta.financeCycleStartedAt !== nextStartIso) {
+          targetState.meta.financeCycleStartedAt = nextStartIso;
+          changed = true;
+        }
+        continue;
+      }
+      const resetStartIso = new Date(nowTs).toISOString();
+      if (targetState.meta.financeCycleStartedAt !== resetStartIso) {
+        targetState.meta.financeCycleStartedAt = resetStartIso;
+        changed = true;
+      }
+      break;
+    }
+
+    pruneFinanceCycleReports(targetState);
+    return changed;
+  }
+
+  function computeFinance(sourceState = state) {
+    const rowsWithTs = financeRowsWithTimestamp(sourceState);
+    const cycleStartTsRaw = parseUpdatedAtTimestamp(sourceState?.meta?.financeCycleStartedAt);
+    const inferredCycleStartTs = cycleStartTsRaw || (rowsWithTs.length ? rowsWithTs[0].ts : 0);
+    const cycleEndTs = inferredCycleStartTs ? inferredCycleStartTs + FINANCE_CYCLE_DAYS * 24 * 60 * 60 * 1000 : 0;
+    const cycleRows = inferredCycleStartTs
+      ? rowsWithTs.filter((row) => row.ts >= inferredCycleStartTs && row.ts < cycleEndTs).map((row) => row.comanda)
+      : [];
+    const metrics = computeFinanceFromRows(cycleRows);
+    const archivedReports = (Array.isArray(sourceState.financeCycleReports) ? sourceState.financeCycleReports : [])
+      .map((entry, idx) => normalizeFinanceCycleReportRecord(entry, idx))
+      .sort((a, b) => new Date(b.endAt || b.generatedAt || 0) - new Date(a.endAt || a.generatedAt || 0));
+
+    return {
+      ...metrics,
+      cycleStartAt: inferredCycleStartTs ? new Date(inferredCycleStartTs).toISOString() : "",
+      cycleEndAt: cycleEndTs ? new Date(cycleEndTs).toISOString() : "",
+      cycleCommandasCount: cycleRows.length,
+      archivedReports
+    };
+  }
+
   function renderAdminFinance() {
-    const finance = computeFinance();
+    const cycleChanged = rollFinance30DayCycles(state, { nowIso: isoNow() });
+    if (cycleChanged) {
+      saveState();
+    }
+    const finance = computeFinance(state);
     const financeInventoryDetailsKey = detailKey("admin-finance", "inventory-integrated");
+    const cycleStartTs = parseUpdatedAtTimestamp(finance.cycleStartAt);
+    const cycleEndTs = parseUpdatedAtTimestamp(finance.cycleEndAt);
+    const nowTs = Date.now();
+    const daysRemaining = cycleEndTs ? Math.max(0, Math.ceil((cycleEndTs - nowTs) / (24 * 60 * 60 * 1000))) : FINANCE_CYCLE_DAYS;
+    const cycleWindowText = cycleStartTs
+      ? `${formatDate(finance.cycleStartAt)} ate ${formatDate(finance.cycleEndAt)}`
+      : "Aguardando primeira venda finalizada para iniciar o ciclo.";
+    const archivedRows = finance.archivedReports
+      .map(
+        (row) =>
+          `<tr><td>${formatDate(row.startAt)} ate ${formatDate(row.endAt)}</td><td>${row.commandasCount}</td><td>${money(row.grossRevenue)}</td><td>${money(row.totalCost)}</td><td>${money(row.netProfit)}</td><td>${formatDateTime(row.generatedAt)}</td></tr>`
+      )
+      .join("");
 
     return `
       <div class="grid">
@@ -3124,7 +3424,19 @@
           <div class="kpi"><p>Receita Bruta</p><b>${money(finance.grossRevenue)}</b></div>
           <div class="kpi"><p>Custo Total</p><b>${money(finance.totalCost)}</b></div>
           <div class="kpi"><p>Lucro Liquido Total</p><b>${money(finance.netProfit)}</b></div>
-          <div class="kpi"><p>Base de Historico</p><b>90 dias</b></div>
+          <div class="kpi"><p>Ciclo Financeiro</p><b>${FINANCE_CYCLE_DAYS} dias</b></div>
+        </div>
+        <div class="card">
+          <h3>Ciclo Atual (30 dias)</h3>
+          <p class="note">Periodo: <b>${esc(cycleWindowText)}</b></p>
+          <p class="note">Comandas no ciclo atual: <b>${finance.cycleCommandasCount}</b> | Itens vendidos: <b>${finance.totalItemsSold}</b></p>
+          <p class="note">Dias restantes para fechamento automatico deste ciclo: <b>${daysRemaining}</b></p>
+        </div>
+        <div class="card">
+          <h3>Relatorios Arquivados (ciclos de 30 dias)</h3>
+          ${finance.archivedReports.length
+        ? `<div class="table-wrap" style="margin-top:0.75rem;"><table><thead><tr><th>Periodo</th><th>Comandas</th><th>Receita</th><th>Custo</th><th>Lucro</th><th>Arquivado em</th></tr></thead><tbody>${archivedRows}</tbody></table></div>`
+        : `<div class="empty" style="margin-top:0.75rem;">Nenhum ciclo de 30 dias arquivado ainda.</div>`}
         </div>
         <div class="card">
           <details class="compact-details" data-persist-key="${esc(financeInventoryDetailsKey)}" style="margin-top:0.15rem;"${detailOpenAttr(financeInventoryDetailsKey)}>
@@ -6878,7 +7190,7 @@
         type: "venda_avulsa_cozinha",
         detail: `Pedido avulso com fluxo de cozinha ${item.name} x${qty} criado. Pagamento ${paymentLabel(paymentMethod)}.${isDelivery ? ` Entrega para ${deliveryRecipient} em ${deliveryLocation}.` : ""}`,
         itemId: item.id
-    });
+      });
 
       state.openComandas.push(saleComanda);
       ensureCashOpenedAtFromComanda(createdAt);
@@ -9077,6 +9389,9 @@
   }
 
   setInterval(() => {
+    // Só re-renderiza se o estado realmente mudou (evita disrupcao no garcom/celular)
+    if (stateVersion === lastRenderedVersion) return;
+    lastRenderedVersion = stateVersion;
     const user = getCurrentUser();
     if (user?.role === "waiter" && uiState.waiterTab === "cozinha") {
       render();
@@ -9104,7 +9419,7 @@
 
   setInterval(() => {
     void pullStateFromSupabase();
-  }, 12000);
+  }, 20000);
 
   broadcastPresencePing();
   void connectSupabase();
