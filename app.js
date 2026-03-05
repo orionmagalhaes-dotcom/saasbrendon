@@ -475,14 +475,17 @@
   function mergeComandasById(localRows, remoteRows, options = {}) {
     const map = new Map();
     const allowRemoteOnly = options.allowRemoteOnly !== false;
+    const deletedSet = new Set(normalizeDeletedIdList(options.deletedIds));
     for (const comanda of Array.isArray(localRows) ? localRows : []) {
       const id = String(comanda?.id || "").trim();
       if (!id) continue;
+      if (deletedSet.has(id)) continue;
       map.set(id, comanda);
     }
     for (const comanda of Array.isArray(remoteRows) ? remoteRows : []) {
       const id = String(comanda?.id || "").trim();
       if (!id) continue;
+      if (deletedSet.has(id)) continue;
       if (!allowRemoteOnly && !map.has(id)) continue;
       const previous = map.get(id);
       map.set(
@@ -701,6 +704,11 @@
       ...(Array.isArray(localMeta.deletedUserIds) ? localMeta.deletedUserIds : []),
       ...(Array.isArray(remoteMeta.deletedUserIds) ? remoteMeta.deletedUserIds : [])
     ]);
+    const deletedComandaIds = normalizeDeletedIdList([
+      ...(Array.isArray(localMeta.deletedComandaIds) ? localMeta.deletedComandaIds : []),
+      ...(Array.isArray(remoteMeta.deletedComandaIds) ? remoteMeta.deletedComandaIds : [])
+    ]);
+    const deletedComandaSet = new Set(deletedComandaIds);
     const deletedProductIds = sanitizeDeletedProductIds(deletedProductIdsRaw, localState, remoteState);
     const deletedUserIds = sanitizeDeletedUserIds(deletedUserIdsRaw, localState, remoteState);
     // Dados operacionais (comandas, historico, auditoria etc.) nunca devem
@@ -709,11 +717,13 @@
     const allowRemoteOperationalInsert = true;
     const mergedOpenComandasRaw = mergeComandasById(localState?.openComandas, remoteState?.openComandas, {
       preferLocal,
-      allowRemoteOnly: allowRemoteOperationalInsert
+      allowRemoteOnly: allowRemoteOperationalInsert,
+      deletedIds: deletedComandaIds
     });
     const mergedClosedComandas = mergeComandasById(localState?.closedComandas, remoteState?.closedComandas, {
       preferLocal,
-      allowRemoteOnly: allowRemoteOperationalInsert
+      allowRemoteOnly: allowRemoteOperationalInsert,
+      deletedIds: deletedComandaIds
     });
     const closedIds = new Set(mergedClosedComandas.map((comanda) => String(comanda?.id || "").trim()).filter(Boolean));
     const mergedOpenComandas = mergedOpenComandasRaw.filter((comanda) => !closedIds.has(String(comanda?.id || "").trim()));
@@ -721,7 +731,14 @@
       getTimestamp: (row) => row?.closedAt || row?.createdAt || row?.updatedAt || "",
       preferLocal,
       allowRemoteOnly: allowRemoteOperationalInsert
-    }).sort((a, b) => new Date(b?.closedAt || b?.createdAt || 0) - new Date(a?.closedAt || a?.createdAt || 0));
+    })
+      .map((row) => ({
+        ...row,
+        commandas: (Array.isArray(row?.commandas) ? row.commandas : []).filter(
+          (comanda) => !deletedComandaSet.has(String(comanda?.id || "").trim())
+        )
+      }))
+      .sort((a, b) => new Date(b?.closedAt || b?.createdAt || 0) - new Date(a?.closedAt || a?.createdAt || 0));
     const mergedCookHistory = mergeRowsByIdWithTimestamp(localState?.cookHistory, remoteState?.cookHistory, {
       getTimestamp: (row) => row?.updatedAt || row?.deliveredAt || "",
       preferLocal,
@@ -763,6 +780,7 @@
         [CATALOG_BACKUPS_META_KEY]: catalogBackups,
         deletedProductIds,
         deletedUserIds,
+        deletedComandaIds,
         operationalResetAt
       },
       cash: { ...(preferLocal ? remoteState?.cash || {} : localState?.cash || {}), ...(preferLocal ? localState?.cash || {} : remoteState?.cash || {}) }
@@ -822,6 +840,7 @@
         lastCloudSyncAt: null,
         deletedProductIds: [],
         deletedUserIds: [],
+        deletedComandaIds: [],
         operationalResetAt: "",
         [FINAL_CLIENT_PREP_FLAG]: true,
         [FINAL_CLIENT_PREP_MARKER]: isoNow(),
@@ -1320,6 +1339,7 @@
     const fallback = initialState();
     const deletedProductIdsRaw = normalizeDeletedIdList(parsed.meta?.deletedProductIds);
     const deletedUserIdsRaw = normalizeDeletedIdList(parsed.meta?.deletedUserIds);
+    const deletedComandaIdsRaw = normalizeDeletedIdList(parsed.meta?.deletedComandaIds);
     const normalized = {
       ...fallback,
       ...parsed,
@@ -1348,6 +1368,7 @@
         [CATALOG_BACKUPS_META_KEY]: normalizeCatalogBackups(parsed.meta?.[CATALOG_BACKUPS_META_KEY]),
         deletedProductIds: deletedProductIdsRaw,
         deletedUserIds: deletedUserIdsRaw,
+        deletedComandaIds: deletedComandaIdsRaw,
         operationalResetAt: normalizeOperationalResetAt(parsed.meta?.operationalResetAt),
         [FINAL_CLIENT_PREP_FLAG]: parsed.meta?.[FINAL_CLIENT_PREP_FLAG] === true,
         [FINAL_CLIENT_PREP_MARKER]:
@@ -1371,6 +1392,7 @@
     recovered.meta = recovered.meta || {};
     recovered.meta.deletedUserIds = sanitizeDeletedUserIds(recovered.meta.deletedUserIds, normalized, recovered);
     recovered.meta.deletedProductIds = sanitizeDeletedProductIds(recovered.meta.deletedProductIds, normalized, recovered);
+    recovered.meta.deletedComandaIds = normalizeDeletedIdList(recovered.meta.deletedComandaIds);
     applyEduardoCredentialRecovery(recovered);
     purgeSystemTestArtifacts(recovered);
     applyFinalClientPreparation(recovered);
@@ -7479,11 +7501,20 @@
     }
 
     const impact = computeComandaDeletionImpact(comanda);
+    trackDeletedEntity("deletedComandaIds", comanda.id);
     for (const row of impact.restockRows) {
       row.product.stock = Math.max(0, parseNumber(row.product.stock || 0) + row.qty);
     }
 
-    state.openComandas = state.openComandas.filter((entry) => String(entry?.id || "") !== String(comanda.id || ""));
+    const deletedId = String(comanda.id || "").trim();
+    state.openComandas = state.openComandas.filter((entry) => String(entry?.id || "").trim() !== deletedId);
+    state.closedComandas = state.closedComandas.filter((entry) => String(entry?.id || "").trim() !== deletedId);
+    state.history90 = (state.history90 || []).map((closure) => ({
+      ...closure,
+      commandas: (Array.isArray(closure?.commandas) ? closure.commandas : []).filter(
+        (entry) => String(entry?.id || "").trim() !== deletedId
+      )
+    }));
     clearWaiterDraftItems(comanda.id);
     delete uiState.finalizeOpenByComanda[comanda.id];
     delete uiState.waiterCollapsedByComanda[comanda.id];
