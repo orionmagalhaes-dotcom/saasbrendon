@@ -183,6 +183,41 @@
     return comandaTs >= openedTs && comandaTs <= closedTs;
   }
 
+  function earliestComandaCreatedAtIso(commandas) {
+    let earliestTs = 0;
+    for (const comanda of Array.isArray(commandas) ? commandas : []) {
+      const ts = parseUpdatedAtTimestamp(comanda?.createdAt);
+      if (!ts) continue;
+      if (!earliestTs || ts < earliestTs) earliestTs = ts;
+    }
+    return earliestTs ? new Date(earliestTs).toISOString() : "";
+  }
+
+  function synchronizeCashOpenedAt(targetState) {
+    if (!targetState || typeof targetState !== "object") return "";
+    targetState.cash = targetState.cash || {};
+    const openComandas = Array.isArray(targetState.openComandas) ? targetState.openComandas : [];
+    const closedComandas = Array.isArray(targetState.closedComandas) ? targetState.closedComandas : [];
+    const effectiveOpenedAt = earliestComandaCreatedAtIso([...openComandas, ...closedComandas]);
+    targetState.cash.openedAt = effectiveOpenedAt || "";
+    return targetState.cash.openedAt;
+  }
+
+  function ensureCashOpenedAtFromComanda(startedAt) {
+    const startedTs = parseUpdatedAtTimestamp(startedAt);
+    if (!startedTs) return;
+    const currentTs = parseUpdatedAtTimestamp(state?.cash?.openedAt);
+    if (!currentTs || startedTs < currentTs) {
+      state.cash.openedAt = new Date(startedTs).toISOString();
+    }
+  }
+
+  function formatCashOpenedAtLabel(value) {
+    const ts = parseUpdatedAtTimestamp(value);
+    if (!ts) return "Aguardando primeira comanda";
+    return formatDateTimeWithDay(new Date(ts).toISOString());
+  }
+
   function sanitizeHistoryClosuresByCashWindow(closures) {
     return (Array.isArray(closures) ? closures : []).map((closure) => {
       const sourceComandas = Array.isArray(closure?.commandas) ? closure.commandas : [];
@@ -219,6 +254,7 @@
     });
     targetState.closedComandas = closedComandas;
     targetState.openComandas = openComandas;
+    synchronizeCashOpenedAt(targetState);
   }
 
   function browserNameFromUa(uaRaw) {
@@ -889,7 +925,7 @@
       history90: [],
       cash: {
         id: "CX-1",
-        openedAt: isoNow(),
+        openedAt: "",
         date: todayISO()
       },
       seq: {
@@ -1609,6 +1645,7 @@
   function saveState(options = {}) {
     const touchMeta = options.touchMeta !== false;
     state.meta = state.meta || {};
+    synchronizeCashOpenedAt(state);
     ensureCatalogBackup(state, "save");
     if (touchMeta) {
       state.meta.updatedAt = isoNow();
@@ -3264,257 +3301,100 @@
   }
 
   function buildCashHistoryPrintHtml(closure, options = {}) {
-    const commandas = Array.isArray(closure?.commandas) ? closure.commandas : [];
+    const commandas = dedupeComandasById(Array.isArray(closure?.commandas) ? closure.commandas : []);
+    const ordered = [...commandas].sort((a, b) => new Date(a.createdAt || a.closedAt || 0) - new Date(b.createdAt || b.closedAt || 0));
     const summary = closure?.summary || buildCashSummary(commandas);
-    const openedAt = closure?.openedAt || state.cash.openedAt;
+    const openedAt = earliestComandaCreatedAtIso(ordered) || closure?.openedAt || state.cash.openedAt || "";
     const closedAt = closure?.closedAt || isoNow();
     const cashId = closure?.cashId || state.cash.id;
     const reportId = closure?.id || `HIST-${cashId}`;
     const printedBy = options.printedBy || currentActor();
     const title = options.title || `Historico do caixa ${cashId}`;
-    const subtitle = options.subtitle || "Relatorio simplificado para conferencia";
-    const finalizedCount = commandas.filter((c) => c.status === "finalizada").length;
-    const rolledCount = commandas.filter((c) => c.status === "encerrada-no-fechamento").length;
-    const avgTicket = summary.commandasCount ? summary.total / summary.commandasCount : 0;
-    const paymentRows = Object.entries(summary.byPayment || {})
-      .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
-      .map(([method, total]) => `<tr><td>${esc(paymentLabel(method))}</td><td class="right">${money(total)}</td></tr>`)
-      .join("");
-    const orderedCommandas = [...commandas].sort(
-      (a, b) => new Date(a.createdAt || a.closedAt || 0) - new Date(b.createdAt || b.closedAt || 0)
-    );
-    const totals = orderedCommandas.reduce(
-      (acc, comanda) => {
-        const metrics = computeComandaSaleAndReturns(comanda);
-        acc.soldQty += metrics.soldQty;
-        acc.soldValue += metrics.soldValue;
-        acc.returnedQty += metrics.returnedQty;
-        acc.returnedValue += metrics.returnedValue;
-        return acc;
-      },
-      { soldQty: 0, soldValue: 0, returnedQty: 0, returnedValue: 0 }
-    );
-    const eventTypeLabels = {
-      comanda_aberta: "Comanda aberta",
-      comanda_obs: "Observacao",
-      comanda_finalizada: "Comanda finalizada",
-      comanda_finalizada_auto: "Comanda finalizada auto",
-      item_add: "Item adicionado",
-      item_incrementado: "Item incrementado",
-      item_reduzido: "Item reduzido",
-      item_cancelado: "Item cancelado",
-      admin_item_add: "Adicionado pelo administrador",
-      admin_item_edit: "Alterado pelo administrador",
-      admin_item_remove: "Removido pelo administrador",
-      item_entregue: "Item entregue",
-      cozinha_status: "Status cozinha",
-      cozinha_prioridade: "Prioridade cozinha",
-      admin_comanda_edit: "Comanda alterada pelo administrador"
+    const subtitle = options.subtitle || "Extrato do dia";
+    const totals = { soldQty: 0, soldValue: 0, soldCost: 0, returnedQty: 0, returnedValue: 0 };
+    const categoryMap = new Map();
+    const waiterMap = new Map();
+    const paymentTotals = { pix: 0, cartao: 0, dinheiro: 0, fiado: 0, outros: 0 };
+    const payBucket = (method) => {
+      if (method === "pix") return "pix";
+      if (method === "dinheiro") return "dinheiro";
+      if (method === "maquineta_credito" || method === "maquineta_debito" || method === "cartao") return "cartao";
+      if (method === "fiado") return "fiado";
+      return "outros";
     };
-    const eventLabel = (type) => eventTypeLabels[String(type || "")] || String(type || "Evento");
-
-    const unifiedComandaRows = orderedCommandas
-      .map((comanda) => {
-        const metrics = computeComandaSaleAndReturns(comanda);
-        const responsible = resolveComandaResponsibleName(comanda);
-        const allEvents = [...(comanda.events || [])].sort((a, b) => new Date(a?.ts || 0) - new Date(b?.ts || 0));
-        const itemEventsById = new Map();
-        const comandaLevelEvents = [];
-        for (const event of allEvents) {
-          const itemId = String(event?.itemId || "").trim();
-          if (itemId) {
-            if (!itemEventsById.has(itemId)) itemEventsById.set(itemId, []);
-            itemEventsById.get(itemId).push(event);
-          } else {
-            comandaLevelEvents.push(event);
-          }
-        }
-        const items = [...(comanda.items || [])].sort((a, b) => new Date(a?.createdAt || 0) - new Date(b?.createdAt || 0));
-        const itemRows = items
-          .map((item) => {
-            const itemId = String(item?.id || "").trim();
-            const itemEvents = itemEventsById.get(itemId) || [];
-            const addedAt = itemEvents.find((event) => event?.type === "item_add")?.ts || item?.createdAt || "";
-            const lastChangeAt =
-              itemEvents[itemEvents.length - 1]?.ts || item?.lastIncrementAt || item?.canceledAt || item?.deliveredAt || item?.createdAt || "";
-            const changesText = itemEvents.length
-              ? itemEvents
-                .map(
-                  (event) =>
-                    esc(
-                      `${formatDateTime(event?.ts)} - ${eventLabel(event?.type)}${event?.actorName ? ` (${event.actorName})` : ""}: ${String(event?.detail || "-")}`
-                    )
-                )
-                .join("<br />")
-              : "Sem alteracoes registradas.";
-            const qty = parseNumber(item?.qty || 0);
-            return `<tr class="comanda-detail-item-row">
-              <td>${esc(comanda.id || "-")}</td>
-              <td>${esc(formatDateTime(comanda.createdAt))}</td>
-              <td>${esc(responsible || "-")}</td>
-              <td>${esc(comanda.table || "-")}</td>
-              <td>${esc(comanda.customer || "-")}</td>
-              <td>${esc(closureStatusLabel(comanda.status))}</td>
-              <td>${esc(comandaPaymentText(comanda, { includeAmount: true, totalFallback: comandaTotal(comanda) }))}</td>
-              <td>${esc(item?.name || "-")}<br /><span class="small">Status: ${esc(cashHistoryItemStatusLabel(item))}</span></td>
-              <td class="center">${qty}</td>
-              <td>${esc(formatDateTime(addedAt))}</td>
-              <td>${changesText}</td>
-            </tr>`;
-          })
-          .join("");
-        const comandaEventRows = comandaLevelEvents
-          .map(
-            (event) => `<tr class="comanda-detail-event-row">
-              <td>${esc(comanda.id || "-")}</td>
-              <td>${esc(formatDateTime(comanda.createdAt))}</td>
-              <td>${esc(event?.actorName || responsible || "-")}</td>
-              <td>${esc(comanda.table || "-")}</td>
-              <td>${esc(comanda.customer || "-")}</td>
-              <td>${esc(closureStatusLabel(comanda.status))}</td>
-              <td>${esc(comandaPaymentText(comanda, { includeAmount: true, totalFallback: comandaTotal(comanda) }))}</td>
-              <td>[Comanda] ${esc(eventLabel(event?.type))}</td>
-              <td class="center">-</td>
-              <td>${esc(formatDateTime(event?.ts))}</td>
-              <td>${esc(String(event?.detail || "-"))}</td>
-            </tr>`
-          )
-          .join("");
-        const summaryRow = `<tr class="comanda-summary-row">
-          <td><b>${esc(comanda.id || "-")}</b></td>
-          <td>${esc(formatDateTime(comanda.createdAt))}</td>
-          <td>${esc(responsible || "-")}</td>
-          <td>${esc(comanda.table || "-")}</td>
-          <td>${esc(comanda.customer || "-")}</td>
-          <td>${esc(closureStatusLabel(comanda.status))}</td>
-          <td>${esc(comandaPaymentText(comanda, { includeAmount: true, totalFallback: comandaTotal(comanda) }))}</td>
-          <td><b>Resumo da comanda</b></td>
-          <td class="center">${metrics.soldQty}</td>
-          <td>${esc(formatDateTime(comanda.closedAt || comanda.createdAt))}</td>
-          <td>Total: <b>${money(comandaTotal(comanda))}</b> | Devolvidos/excluidos: <b>${metrics.returnedQty}</b></td>
-        </tr>`;
-        return `${summaryRow}${itemRows}${comandaEventRows}`;
-      })
-      .join("");
-    const soldByCategoryMap = new Map();
-    for (const comanda of orderedCommandas) {
+    const responsibleProfile = (comanda) => {
+      const user = state.users.find((u) => String(u?.id || "") === String(comanda?.createdBy || ""));
+      if (user?.name) return { name: user.name, role: String(user.role || "") };
+      return { name: resolveComandaResponsibleName(comanda), role: "" };
+    };
+    for (const comanda of ordered) {
+      const total = comandaTotal(comanda);
+      const returns = computeComandaSaleAndReturns(comanda);
+      totals.returnedQty += returns.returnedQty;
+      totals.returnedValue += returns.returnedValue;
+      for (const split of comandaPaymentSplits(comanda, { totalFallback: total })) {
+        const amount = Math.max(0, parseNumber(split?.amount || 0));
+        if (!(amount > 0)) continue;
+        paymentTotals[payBucket(String(split?.method || ""))] += amount;
+      }
+      const responsible = responsibleProfile(comanda);
+      if (!responsible.role || responsible.role === "waiter") {
+        const key = String(responsible.name || "-").trim() || "-";
+        if (!waiterMap.has(key)) waiterMap.set(key, { name: key, comandas: 0, vendido: 0, recebido: 0 });
+        const waiter = waiterMap.get(key);
+        waiter.comandas += 1;
+        waiter.vendido += total;
+        waiter.recebido += comandaPaymentSplits(comanda, { totalFallback: total })
+          .filter((split) => String(split?.method || "") !== "fiado")
+          .reduce((sum, split) => sum + Math.max(0, parseNumber(split?.amount || 0)), 0);
+      }
       for (const item of comanda.items || []) {
         if (!itemCountsForTotal(item)) continue;
-        const qty = parseNumber(item.qty || 0);
+        const qty = parseNumber(item?.qty || 0);
         if (!(qty > 0)) continue;
-        const name = String(item.name || "").trim() || "Item sem nome";
-        const category = String(item.category || "Sem categoria").trim();
-        if (!soldByCategoryMap.has(category)) soldByCategoryMap.set(category, new Map());
-        const catMap = soldByCategoryMap.get(category);
-        catMap.set(name, Number(catMap.get(name) || 0) + qty);
+        const price = parseNumber(item?.priceAtSale || 0);
+        const cost = parseNumber(item?.costAtSale || 0);
+        const cat = String(item?.category || "Sem categoria").trim() || "Sem categoria";
+        const name = String(item?.name || "").trim() || "Item sem nome";
+        const revenue = qty * price;
+        totals.soldQty += qty;
+        totals.soldValue += revenue;
+        totals.soldCost += qty * cost;
+        if (!categoryMap.has(cat)) categoryMap.set(cat, { qty: 0, revenue: 0, items: new Map() });
+        const catEntry = categoryMap.get(cat);
+        catEntry.qty += qty;
+        catEntry.revenue += revenue;
+        catEntry.items.set(name, {
+          qty: (catEntry.items.get(name)?.qty || 0) + qty,
+          revenue: (catEntry.items.get(name)?.revenue || 0) + revenue
+        });
       }
     }
-    const soldByCategorySections = [...soldByCategoryMap.entries()]
+    const categoryCards = [...categoryMap.entries()]
       .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
-      .map(([category, itemsMap]) => {
-        const sortedItems = [...itemsMap.entries()].sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0) || String(a[0]).localeCompare(String(b[0])));
-        const categoryTotal = sortedItems.reduce((sum, [, q]) => sum + q, 0);
-        const rows = sortedItems.map(([name, qty]) => `<tr><td>${esc(name)}</td><td class="center">${parseNumber(qty)}</td></tr>`).join("");
-        return `<tr class="comanda-summary-row"><td colspan="2"><b>${esc(category)}</b> (${categoryTotal} itens)</td></tr>${rows}`;
+      .map(([cat, data]) => {
+        const rows = [...data.items.entries()]
+          .sort((a, b) => Number(b[1]?.revenue || 0) - Number(a[1]?.revenue || 0))
+          .map(([name, row]) => `<tr><td>${esc(name)}</td><td class="center">${parseNumber(row.qty || 0)}</td><td class="right">${money(row.revenue || 0)}</td></tr>`)
+          .join("");
+        return `<details class="acc" open><summary><b>${esc(cat)}</b> (${parseNumber(data.qty || 0)} itens) <span>${money(data.revenue || 0)}</span></summary><table><thead><tr><th>Item</th><th class="center">Qtd</th><th class="right">Receita</th></tr></thead><tbody>${rows || `<tr><td colspan="3">Sem itens.</td></tr>`}</tbody></table></details>`;
       })
       .join("");
-
-    return `
-      <html>
-        <head>
-          <title>Historico ${esc(cashId)}</title>
-          <style>
-            @page { size: A4 landscape; margin: 8mm; }
-            * { box-sizing: border-box; }
-            body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; padding: 8px; color: #111; background: #fff; }
-            .report { width: 100%; margin: 0 auto; }
-            h1 { margin: 0 0 4px; text-align: center; font-size: 18px; letter-spacing: 0.2px; }
-            h2 { margin: 12px 0 6px; font-size: 13px; border-top: 1px solid #9aa7b7; padding-top: 8px; }
-            p { margin: 2px 0; font-size: 11px; line-height: 1.3; }
-            .small { font-size: 10px; color: #4d5b6b; }
-            .summary { margin-top: 8px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
-            .box { border: 1px solid #75859a; padding: 6px; min-height: 45px; background: #f9fbfd; }
-            .box b { display: block; font-size: 10px; margin-bottom: 2px; text-transform: uppercase; letter-spacing: 0.2px; color: #324355; }
-            .table-block { margin-top: 8px; }
-            table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 10px; table-layout: fixed; }
-            th, td { border: 1px solid #9aa7b7; padding: 4px 5px; text-align: left; vertical-align: top; overflow-wrap: anywhere; word-break: break-word; }
-            th { background: #e8eef6; font-weight: 700; }
-            thead { display: table-header-group; }
-            tr { break-inside: avoid; page-break-inside: avoid; }
-            .comandas-unified-table th:nth-child(1) { width: 6%; }
-            .comandas-unified-table th:nth-child(2) { width: 10%; }
-            .comandas-unified-table th:nth-child(3) { width: 9%; }
-            .comandas-unified-table th:nth-child(4) { width: 8%; }
-            .comandas-unified-table th:nth-child(5) { width: 8%; }
-            .comandas-unified-table th:nth-child(6) { width: 7%; }
-            .comandas-unified-table th:nth-child(7) { width: 10%; }
-            .comandas-unified-table th:nth-child(8) { width: 14%; }
-            .comandas-unified-table th:nth-child(9) { width: 5%; }
-            .comandas-unified-table th:nth-child(10) { width: 10%; }
-            .comandas-unified-table th:nth-child(11) { width: 13%; }
-            .comanda-summary-row td { background: #f2f7ff; font-weight: 600; }
-            .comanda-detail-event-row td { background: #fafbff; }
-            .right { text-align: right; }
-            .center { text-align: center; }
-            .footer { margin-top: 10px; border-top: 1px solid #9aa7b7; padding-top: 6px; }
-            @media print {
-              body { padding: 0; }
-              .report { width: 100%; max-width: none; }
-              * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-            }
-          </style>
-        </head>
-        <body>
-          <div class="report">
-            <h1>${esc(ESTABLISHMENT_NAME)}</h1>
-            <p><b>${esc(title)}</b></p>
-            <p class="small">${esc(subtitle)}</p>
-            <p>Caixa: <b>${esc(cashId)}</b> | Registro: <b>${esc(reportId)}</b></p>
-            <p>Aberto em: ${esc(formatDateTimeWithDay(openedAt))}</p>
-            <p>Fechado em: ${esc(formatDateTimeWithDay(closedAt))}</p>
-            <p>Impresso por: ${esc(printedBy?.name || "Sistema")} (${esc(roleLabel(printedBy?.role || "system"))})</p>
-
-            <div class="summary">
-              <div class="box"><b>Total vendido</b>${money(summary.total)}</div>
-              <div class="box"><b>Comandas</b>${summary.commandasCount}</div>
-              <div class="box"><b>Ticket medio</b>${money(avgTicket)}</div>
-              <div class="box"><b>Finalizadas</b>${finalizedCount}</div>
-              <div class="box"><b>Encerradas no fechamento</b>${rolledCount}</div>
-              <div class="box"><b>Gerado em</b>${esc(formatDateTime(isoNow()))}</div>
-            </div>
-
-            <h2>Resumo por pagamento</h2>
-            <table class="payment-table">
-              <thead><tr><th>Metodo</th><th class="right">Total</th></tr></thead>
-              <tbody>${paymentRows || `<tr><td colspan="2">Sem pagamentos registrados.</td></tr>`}</tbody>
-            </table>
-
-            <h2>Comandas do dia (itens e alteracoes unificados)</h2>
-            <table class="comandas-unified-table">
-              <thead>
-                <tr><th>Comanda</th><th>Criada em</th><th>Garcom</th><th>Mesa/ref</th><th>Cliente</th><th>Status</th><th>Pagamento</th><th>Item/Alteracao</th><th>Qtd</th><th>Horario inclusao</th><th>Historico de alteracoes</th></tr>
-              </thead>
-              <tbody>${unifiedComandaRows || `<tr><td colspan="11">Sem comandas no periodo.</td></tr>`}</tbody>
-            </table>
-
-            <h2>Itens vendidos por categoria</h2>
-            <table>
-              <thead>
-                <tr><th>Produto</th><th class="center">Quantidade</th></tr>
-              </thead>
-              <tbody>${soldByCategorySections || `<tr><td colspan="2">Sem itens vendidos no periodo.</td></tr>`}</tbody>
-            </table>
-
-            <div class="footer">
-              <p><b>Consolidado final de itens</b></p>
-              <p>Itens vendidos: <b>${totals.soldQty}</b> | Valor dos itens vendidos: <b>${money(totals.soldValue)}</b></p>
-              <p>Itens devolvidos/excluidos: <b>${totals.returnedQty}</b> | Valor devolvido/excluido: <b>${money(totals.returnedValue)}</b></p>
-              <p class="small">Relatorio simples de fechamento. Itens cancelados ou marcados em falta nao entram no total.</p>
-            </div>
-          </div>
-        </body>
-      </html>
-    `;
+    const waiterRows = [...waiterMap.values()]
+      .sort((a, b) => Number(b.vendido || 0) - Number(a.vendido || 0))
+      .map((w) => `<tr><td>${esc(w.name)}</td><td class="center">${w.comandas}</td><td class="right">${money(w.vendido)}</td><td class="right">${money(w.recebido)}</td></tr>`)
+      .join("");
+    const comandaRows = ordered
+      .map((c) => `<tr><td>${esc(c.id || "-")}</td><td>${esc(formatDateTime(c.createdAt))}</td><td>${esc(formatDateTime(c.closedAt || "-"))}</td><td>${esc(resolveComandaResponsibleName(c))}</td><td>${esc(c.table || "-")}</td><td>${esc(c.customer || "-")}</td><td>${esc(closureStatusLabel(c.status))}</td><td class="right">${money(comandaTotal(c))}</td><td>${esc(comandaPaymentText(c, { includeAmount: true, totalFallback: comandaTotal(c) }))}</td></tr>`)
+      .join("");
+    const financeiro = {
+      bruto: summary.total,
+      cmv: totals.soldCost,
+      lucroBruto: summary.total - totals.soldCost,
+      perdas: totals.returnedValue,
+      lucroLiquido: summary.total - totals.soldCost - totals.returnedValue
+    };
+    return `<html><head><title>Extrato ${esc(cashId)}</title><style>@page{size:A4;margin:10mm}*{box-sizing:border-box}body{margin:0;font-family:"Segoe UI",Arial,sans-serif;color:#12253f;background:#f4f7fb}.report{max-width:1100px;margin:0 auto;padding:20px}.card,.section,.header{background:#fff;border:1px solid #dbe4f0;border-radius:12px}.header{padding:16px}.header h1{margin:0;font-size:20px}.header p{margin:6px 0 0;font-size:12px;color:#556a86}.summary{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin-top:12px}.card{padding:10px}.k{font-size:10px;text-transform:uppercase;color:#667a96}.v{margin-top:6px;font-size:17px;font-weight:700}.section{padding:14px;margin-top:12px}.section h2{margin:0 0 10px;font-size:15px}.note{margin:0 0 10px;font-size:11px;color:#667a96}.two{display:grid;grid-template-columns:1.4fr 1fr;gap:12px}table{width:100%;border-collapse:collapse;font-size:12px}th,td{padding:8px 6px;border-bottom:1px solid #e7eef7;text-align:left;vertical-align:top}th{font-size:10px;text-transform:uppercase;color:#5d6f88}.right{text-align:right}.center{text-align:center}.acc{border:1px solid #dbe4f0;border-radius:10px;margin-bottom:8px;overflow:hidden}.acc summary{display:flex;justify-content:space-between;padding:10px 12px;background:#f5f9ff;list-style:none;font-size:12px}.acc summary::-webkit-details-marker{display:none}@media(max-width:900px){.summary{grid-template-columns:repeat(2,minmax(0,1fr))}.two{grid-template-columns:1fr}}@media print{body{background:#fff}.report{max-width:none;padding:0}.card,.section,.header,.acc{break-inside:avoid;page-break-inside:avoid}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style></head><body><div class="report"><div class="header"><h1>${esc(ESTABLISHMENT_NAME)}</h1><p><b>${esc(title)}</b></p><p>${esc(subtitle)}</p><p>Caixa <b>${esc(cashId)}</b> | Registro <b>${esc(reportId)}</b> | Abertura efetiva ${esc(formatCashOpenedAtLabel(openedAt))} | Fechamento ${esc(formatDateTimeWithDay(closedAt))} | Impresso por ${esc(printedBy?.name || "Sistema")} (${esc(roleLabel(printedBy?.role || "system"))})</p><div class="summary"><div class="card"><div class="k">Total Vendido</div><div class="v">${money(summary.total)}</div></div><div class="card"><div class="k">Recebido no Caixa</div><div class="v">${money(paymentTotals.pix + paymentTotals.cartao + paymentTotals.dinheiro + paymentTotals.outros)}</div></div><div class="card"><div class="k">Comandas</div><div class="v">${summary.commandasCount}</div></div><div class="card"><div class="k">Ticket Medio</div><div class="v">${money(summary.commandasCount ? summary.total / summary.commandasCount : 0)}</div></div><div class="card"><div class="k">Itens Vendidos</div><div class="v">${parseNumber(totals.soldQty)}</div></div><div class="card"><div class="k">Devolvidos/Excluidos</div><div class="v">${parseNumber(totals.returnedQty)}</div></div></div></div><div class="section"><h2>Itens Vendidos por Categoria</h2><p class="note">Categorias existentes com agrupamento por item.</p>${categoryCards || `<p class="note">Sem itens vendidos no periodo.</p>`}</div><div class="section"><h2>Performance por Garcom</h2><p class="note">Total de vendas e valor efetivamente recebido (sem fiado).</p><table><thead><tr><th>Garcom</th><th class="center">Comandas</th><th class="right">Vendido</th><th class="right">Recebido</th></tr></thead><tbody>${waiterRows || `<tr><td colspan="4">Sem comandas registradas por garcom.</td></tr>`}</tbody></table></div><div class="section"><h2>Financeiro</h2><div class="two"><div><p class="note">Resumo por forma de pagamento.</p><table><thead><tr><th>Metodo</th><th class="right">Total</th></tr></thead><tbody><tr><td>Pix</td><td class="right">${money(paymentTotals.pix)}</td></tr><tr><td>Cartao</td><td class="right">${money(paymentTotals.cartao)}</td></tr><tr><td>Dinheiro</td><td class="right">${money(paymentTotals.dinheiro)}</td></tr><tr><td>Fiado</td><td class="right">${money(paymentTotals.fiado)}</td></tr><tr><td>Outros</td><td class="right">${money(paymentTotals.outros)}</td></tr></tbody></table></div><div><p class="note">Lucro bruto x liquido (estimado pelo CMV cadastrado).</p><table><tbody><tr><th>Faturamento Bruto</th><td class="right">${money(financeiro.bruto)}</td></tr><tr><th>CMV</th><td class="right">${money(financeiro.cmv)}</td></tr><tr><th>Lucro Bruto</th><td class="right">${money(financeiro.lucroBruto)}</td></tr><tr><th>Perdas</th><td class="right">${money(financeiro.perdas)}</td></tr><tr><th>Lucro Liquido</th><td class="right">${money(financeiro.lucroLiquido)}</td></tr></tbody></table></div></div></div><div class="section"><h2>Comandas do Periodo</h2><p class="note">Uma linha por comanda (sem repeticao de item).</p><table><thead><tr><th>Comanda</th><th>Criada</th><th>Fechada</th><th>Garcom</th><th>Mesa/ref</th><th>Cliente</th><th>Status</th><th class="right">Total</th><th>Pagamento</th></tr></thead><tbody>${comandaRows || `<tr><td colspan="9">Sem comandas no periodo.</td></tr>`}</tbody></table></div></div></body></html>`;
   }
 
   function createCashHtmlReportRecord(closure, actor, html, options = {}) {
@@ -4103,7 +3983,7 @@
   }
 
   function renderAdminCash() {
-    const openInfo = `Caixa ${state.cash.id} aberto em ${formatDateTimeWithDay(state.cash.openedAt)}`;
+    const openInfo = `Caixa ${state.cash.id} iniciado em ${formatCashOpenedAtLabel(state.cash.openedAt)}`;
     const pendingOpen = [...state.openComandas].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
     const hasPendingOpen = pendingOpen.length > 0;
     const pendingPreview = pendingOpen
@@ -6846,6 +6726,7 @@
     const tableInput = form.table.value.trim();
     const table = isAvulsa ? "Venda Avulsa" : tableInput;
     const customer = form.customer.value.trim();
+    const createdAt = isoNow();
 
     if (!table) {
       alert("Informe mesa ou referencia.");
@@ -6856,7 +6737,7 @@
       id: `CMD-${String(state.seq.comanda++).padStart(4, "0")}`,
       table,
       customer,
-      createdAt: isoNow(),
+      createdAt,
       createdBy: actor.id,
       status: "aberta",
       notes: isAvulsa ? ["Comanda marcada como venda avulsa na abertura."] : [],
@@ -6869,6 +6750,7 @@
     };
 
     state.openComandas.push(comanda);
+    ensureCashOpenedAtFromComanda(createdAt);
     appendComandaEvent(comanda, {
       actor,
       type: "comanda_aberta",
@@ -6926,6 +6808,7 @@
 
     if (needsKitchen) {
       const waitingBefore = totalKitchenQueueMs();
+      const createdAt = isoNow();
       const item = {
         id: `IT-${String(state.seq.item++).padStart(5, "0")}`,
         productId: product.id,
@@ -6939,23 +6822,23 @@
         needsKitchen: true,
         waiterNote: note,
         noteType: "",
-        createdAt: isoNow(),
+        createdAt,
         delivered: false,
         deliveredAt: null,
         kitchenStatus: "fila",
-        kitchenStatusAt: isoNow(),
+        kitchenStatusAt: createdAt,
         kitchenStatusById: null,
         kitchenStatusByName: "",
         kitchenPriority: "normal",
         kitchenPriorityById: null,
         kitchenPriorityByName: "",
-        kitchenPriorityAt: isoNow(),
+        kitchenPriorityAt: createdAt,
         kitchenReceivedAt: null,
         kitchenReceivedById: null,
         kitchenReceivedByName: "",
         kitchenAlertUnread: true,
         waiterVisualState: "new",
-        waiterVisualUpdatedAt: isoNow(),
+        waiterVisualUpdatedAt: createdAt,
         deliveryRequested: isDelivery,
         deliveryRecipient: isDelivery ? deliveryRecipient : "",
         deliveryLocation: isDelivery ? deliveryLocation : "",
@@ -6971,7 +6854,7 @@
         id: `AVK-${String(state.seq.sale++).padStart(5, "0")}`,
         table: product.category === "Ofertas" ? "Avulsa Oferta (Cozinha)" : "Avulsa Cozinha",
         customer: customer || (isDelivery ? deliveryRecipient : ""),
-        createdAt: isoNow(),
+        createdAt,
         createdBy: actor.id,
         status: "aberta",
         notes: [product.category === "Ofertas" ? "Venda avulsa de oferta (cozinha)" : "Venda avulsa de cozinha", ...(note ? [note] : [])],
@@ -6995,9 +6878,10 @@
         type: "venda_avulsa_cozinha",
         detail: `Pedido avulso com fluxo de cozinha ${item.name} x${qty} criado. Pagamento ${paymentLabel(paymentMethod)}.${isDelivery ? ` Entrega para ${deliveryRecipient} em ${deliveryLocation}.` : ""}`,
         itemId: item.id
-      });
+    });
 
       state.openComandas.push(saleComanda);
+      ensureCashOpenedAtFromComanda(createdAt);
       appendAudit({
         actor,
         type: "venda_avulsa_cozinha",
@@ -7017,12 +6901,13 @@
       return;
     }
 
+    const createdAt = isoNow();
     const saleComanda = {
       id: `AV-${String(state.seq.sale++).padStart(5, "0")}`,
       table: "Venda Avulsa",
       customer: customer || "",
-      createdAt: isoNow(),
-      closedAt: isoNow(),
+      createdAt,
+      closedAt: createdAt,
       createdBy: actor.id,
       status: "finalizada",
       notes: note ? [note] : ["Venda avulsa"],
@@ -7040,9 +6925,9 @@
           needsKitchen: false,
           waiterNote: note,
           noteType: "",
-          createdAt: isoNow(),
+          createdAt,
           delivered: true,
-          deliveredAt: isoNow(),
+          deliveredAt: createdAt,
           kitchenStatus: "",
           kitchenStatusAt: null,
           kitchenStatusById: null,
@@ -7063,7 +6948,7 @@
       ],
       events: [
         {
-          ts: isoNow(),
+          ts: createdAt,
           actorId: actor.id,
           actorRole: actor.role,
           actorName: actor.name,
@@ -7076,7 +6961,7 @@
       payment: {
         method: paymentMethod,
         methodLabel: paymentLabel(paymentMethod),
-        verifiedAt: isoNow(),
+        verifiedAt: createdAt,
         customerName: customer || "",
         pixCode: ""
       },
@@ -7085,6 +6970,7 @@
     };
 
     state.closedComandas.unshift(saleComanda);
+    ensureCashOpenedAtFromComanda(createdAt);
     appendAudit({
       actor,
       type: "venda_avulsa",
@@ -8495,6 +8381,7 @@
     }
 
     sanitizeOperationalComandasAgainstHistory(state);
+    synchronizeCashOpenedAt(state);
 
     const pendingOpen = [...state.openComandas].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
     if (pendingOpen.length) {
@@ -8511,17 +8398,17 @@
       return;
     }
 
-    const openedAt = state.cash.openedAt;
     const closedAt = isoNow();
+    const closureDraft = buildCashClosureDraft(closedAt);
+    const openedAt = earliestComandaCreatedAtIso(closureDraft.commandas) || state.cash.openedAt || "";
     const confirmText =
       `Confirmar fechamento do caixa ${state.cash.id}?\n` +
-      `Aberto em: ${formatDateTimeWithDay(openedAt)}\n` +
+      `Aberto em: ${formatCashOpenedAtLabel(openedAt)}\n` +
       `Fechamento em: ${formatDateTimeWithDay(closedAt)}\n\n` +
       "Comandas do dia serao movidas para historico e dados operacionais limpos.";
     if (!confirm(confirmText)) {
       return;
     }
-    const closureDraft = buildCashClosureDraft(closedAt);
     const allDayComandas = closureDraft.commandas;
     const closure = {
       id: `HIST-${Date.now()}`,
@@ -8537,7 +8424,7 @@
           actorRole: actor.role,
           actorName: actor.name,
           type: "caixa_fechado",
-          detail: `Caixa ${state.cash.id} fechado com segunda autenticacao. Aberto em ${formatDateTimeWithDay(openedAt)} e fechado em ${formatDateTimeWithDay(closedAt)}.`,
+          detail: `Caixa ${state.cash.id} fechado com segunda autenticacao. Aberto em ${formatCashOpenedAtLabel(openedAt)} e fechado em ${formatDateTimeWithDay(closedAt)}.`,
           comandaId: null,
           itemId: null,
           reason: ""
@@ -8566,7 +8453,7 @@
     uiState.remoteMonitorEvents = [];
     state.cash = {
       id: `CX-${state.seq.cash++}`,
-      openedAt: isoNow(),
+      openedAt: "",
       date: todayISO()
     };
 
@@ -8575,7 +8462,7 @@
       previewTitle: reportOptions.title,
       previewSubtitle: `${reportOptions.subtitle} | Arquivo ${archivedHtmlReport.id}`
     });
-    alert(`Caixa fechado com sucesso.\nAbertura: ${formatDateTimeWithDay(openedAt)}\nFechamento: ${formatDateTimeWithDay(closedAt)}\nHistorico mantido por 90 dias.`);
+    alert(`Caixa fechado com sucesso.\nAbertura: ${formatCashOpenedAtLabel(openedAt)}\nFechamento: ${formatDateTimeWithDay(closedAt)}\nHistorico mantido por 90 dias.`);
     render();
   }
 
