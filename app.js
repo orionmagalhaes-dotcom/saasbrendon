@@ -155,6 +155,72 @@
     return ts;
   }
 
+  function comandaLatestEventTimestamp(comanda) {
+    const events = Array.isArray(comanda?.events) ? comanda.events : [];
+    if (!events.length) return 0;
+    let latest = 0;
+    for (const event of events) {
+      const ts = parseUpdatedAtTimestamp(event?.ts);
+      if (ts > latest) latest = ts;
+    }
+    return latest;
+  }
+
+  function comandaReferenceTimestamp(comanda) {
+    const closedTs = parseUpdatedAtTimestamp(comanda?.closedAt);
+    if (closedTs) return closedTs;
+    const latestEventTs = comandaLatestEventTimestamp(comanda);
+    if (latestEventTs) return latestEventTs;
+    return parseUpdatedAtTimestamp(comanda?.createdAt);
+  }
+
+  function comandaBelongsToCashWindow(comanda, openedAt, closedAt) {
+    const openedTs = parseUpdatedAtTimestamp(openedAt);
+    const closedTs = parseUpdatedAtTimestamp(closedAt);
+    if (!openedTs || !closedTs || closedTs < openedTs) return true;
+    const comandaTs = comandaReferenceTimestamp(comanda);
+    if (!comandaTs) return true;
+    return comandaTs >= openedTs && comandaTs <= closedTs;
+  }
+
+  function sanitizeHistoryClosuresByCashWindow(closures) {
+    return (Array.isArray(closures) ? closures : []).map((closure) => {
+      const sourceComandas = Array.isArray(closure?.commandas) ? closure.commandas : [];
+      const filteredComandas = dedupeComandasById(
+        sourceComandas.filter((comanda) => comandaBelongsToCashWindow(comanda, closure?.openedAt, closure?.closedAt))
+      );
+      return {
+        ...closure,
+        commandas: filteredComandas,
+        summary: buildCashSummary(filteredComandas)
+      };
+    });
+  }
+
+  function sanitizeOperationalComandasAgainstHistory(targetState) {
+    if (!targetState || typeof targetState !== "object") return;
+    targetState.history90 = sanitizeHistoryClosuresByCashWindow(targetState.history90);
+    const archivedIds = new Set(
+      (targetState.history90 || [])
+        .flatMap((closure) => (Array.isArray(closure?.commandas) ? closure.commandas : []))
+        .map((comanda) => String(comanda?.id || "").trim())
+        .filter(Boolean)
+    );
+    const closedComandas = dedupeComandasById(targetState.closedComandas).filter(
+      (comanda) => !archivedIds.has(String(comanda?.id || "").trim())
+    );
+    const closedIds = new Set(closedComandas.map((comanda) => String(comanda?.id || "").trim()).filter(Boolean));
+    const openComandas = dedupeComandasById(targetState.openComandas).filter((comanda) => {
+      const id = String(comanda?.id || "").trim();
+      if (!id) return false;
+      if (archivedIds.has(id)) return false;
+      if (closedIds.has(id)) return false;
+      return true;
+    });
+    targetState.closedComandas = closedComandas;
+    targetState.openComandas = openComandas;
+  }
+
   function browserNameFromUa(uaRaw) {
     const ua = String(uaRaw || "").toLowerCase();
     if (ua.includes("edg/")) return "Edge";
@@ -786,6 +852,7 @@
       cash: { ...(preferLocal ? remoteState?.cash || {} : localState?.cash || {}), ...(preferLocal ? localState?.cash || {} : remoteState?.cash || {}) }
     };
     applyOperationalResetCutoff(merged, operationalResetAt);
+    sanitizeOperationalComandasAgainstHistory(merged);
     merged.seq = merged.seq || {};
     const maxUserId = Math.max(0, ...(Array.isArray(merged.users) ? merged.users : []).map((u) => Number(u?.id || 0)));
     const maxProductId = Math.max(0, ...(Array.isArray(merged.products) ? merged.products : []).map((p) => Number(p?.id || 0)));
@@ -1397,6 +1464,7 @@
     purgeSystemTestArtifacts(recovered);
     applyFinalClientPreparation(recovered);
     applyOperationalResetCutoff(recovered, recovered.meta?.operationalResetAt);
+    sanitizeOperationalComandasAgainstHistory(recovered);
     ensureCatalogBackup(recovered, "normalize");
     pruneHistory(recovered);
     prunePayables(recovered);
@@ -3178,7 +3246,10 @@
   }
 
   function buildCashClosureDraft(closedAt = isoNow()) {
-    const commandas = [...state.closedComandas];
+    const openedAt = state.cash?.openedAt || "";
+    const commandas = dedupeComandasById(state.closedComandas).filter((comanda) =>
+      comandaBelongsToCashWindow(comanda, openedAt, closedAt)
+    );
     return {
       commandas,
       summary: buildCashSummary(commandas)
@@ -8422,6 +8493,8 @@
       alert("Segunda autenticacao invalida.");
       return;
     }
+
+    sanitizeOperationalComandasAgainstHistory(state);
 
     const pendingOpen = [...state.openComandas].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
     if (pendingOpen.length) {
