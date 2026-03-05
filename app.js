@@ -104,6 +104,10 @@
       comandaId: "",
       mode: "increment"
     },
+    deleteComandaAuth: {
+      open: false,
+      comandaId: ""
+    },
     quickSalePaidConfirm: true,
     printerPrefs: loadPrinterPrefs(),
     qzSecurityConfigured: false
@@ -2903,7 +2907,7 @@
           .map((p) => {
             const customerName = String(p.customerName || "").trim() || "-";
             return `<tr data-payable-id="${esc(p.id)}" class="payable-row"><td data-label="Comanda"><div class="payable-comanda-cell"><b>${esc(p.comandaId)}</b></div></td><td data-label="Cliente">${esc(customerName)}</td><td data-label="Total pendente"><b>${money(p.total)}</b></td><td data-label="Criado em">${formatDate(p.createdAt)}</td><td data-label="Acoes">${canManage
-                ? `<div class="actions payable-actions"><button class="btn secondary compact-action" data-action="open-comanda-edit-flow" data-comanda-id="${esc(p.comandaId)}">Editar</button></div>`
+                ? `<div class="actions payable-actions"><button class="btn secondary compact-action" type="button" data-action="open-comanda-edit-flow" data-comanda-id="${esc(p.comandaId)}">Editar</button><button class="btn ok compact-action" type="button" data-action="receive-payable" data-id="${esc(p.id)}">Marcar como pago</button></div>`
                 : `<span class="note">Somente admin/dev</span>`}</td></tr>`;
           })
           .join("")}</tbody></table></div>`
@@ -4303,6 +4307,7 @@
         ${renderTabs("admin", tabs, uiState.adminTab)}
         ${content}
         ${renderComandaItemSelectorModal()}
+        ${renderDeleteComandaAuthModal()}
       </div>
     `;
   }
@@ -4398,6 +4403,7 @@
         ${renderTabs("dev", tabs, uiState.devTab)}
         ${content}
         ${renderComandaItemSelectorModal()}
+        ${renderDeleteComandaAuthModal()}
       </div>
     `;
   }
@@ -4678,13 +4684,13 @@
             <p class="note comanda-meta-note">Garcom: ${esc(resolveComandaResponsibleName(comanda))} | Cliente: ${esc(comanda.customer || "Nao informado")} | Aberta em ${formatDateTime(comanda.createdAt)}</p>
             <p class="note">Total atual: <b>${money(totalDisplay)}</b>${fiadoPending ? ` | Fiado pendente` : ""}</p>
           </div>
-          ${canToggleCollapse ? `<button class="btn secondary" data-action="toggle-comanda-collapse" data-comanda-id="${comanda.id}">${isCollapsed ? "Expandir" : "Minimizar"}</button>` : ""}
+          ${canToggleCollapse ? `<button class="btn secondary" type="button" data-action="toggle-comanda-collapse" data-comanda-id="${comanda.id}">${isCollapsed ? "Expandir" : "Minimizar"}</button>` : ""}
         </div>
 
         ${!isCollapsed && comanda.notes?.length ? `<div class="note">Obs da comanda: ${comanda.notes.map((n) => esc(n)).join(" | ")}</div>` : ""}
         ${!isCollapsed && canResolveIndicator ? `<div class="actions indicator-actions"><button class="btn secondary" data-action="resolve-kitchen-indicator" data-comanda-id="${comanda.id}" data-mode="entendi">Entendi o alerta</button></div>` : ""}
         ${!fiadoEditMode && !isCollapsed && validItemsCount
-        ? `<div class="actions comanda-item-icon-actions"><button class="btn icon-action-btn plus" data-action="open-item-selector" data-comanda-id="${comanda.id}" data-mode="increment" title="Adicionar quantidade em item" aria-label="Adicionar quantidade em item">+</button><button class="btn icon-action-btn cancel" data-action="open-item-selector" data-comanda-id="${comanda.id}" data-mode="cancel" title="Devolver/cancelar quantidade" aria-label="Devolver ou cancelar quantidade">x</button></div>`
+        ? `<div class="actions comanda-item-icon-actions"><button class="btn icon-action-btn plus" type="button" data-action="open-item-selector" data-comanda-id="${comanda.id}" data-mode="increment" title="Adicionar quantidade em item" aria-label="Adicionar quantidade em item">+</button><button class="btn icon-action-btn cancel" type="button" data-action="open-item-selector" data-comanda-id="${comanda.id}" data-mode="cancel" title="Devolver/cancelar quantidade" aria-label="Devolver ou cancelar quantidade">x</button></div>`
         : ""
       }
 
@@ -4757,10 +4763,10 @@
 
         ${!fiadoEditMode && !isCollapsed
         ? `<div class="actions">
-          <button class="btn secondary" data-action="add-comanda-note" data-comanda-id="${comanda.id}">Adicionar observacao</button>
-          <button class="btn secondary" data-action="print-comanda" data-comanda-id="${comanda.id}">Ver cupom</button>
-          ${canDeleteComanda ? `<button class="btn danger" data-action="delete-comanda" data-comanda-id="${comanda.id}">Excluir comanda</button>` : ""}
-          <button class="btn primary" data-action="toggle-finalize" data-comanda-id="${comanda.id}">${isFinalizeOpen ? "Fechar painel" : "Finalizar comanda"}</button>
+          <button class="btn secondary" type="button" data-action="add-comanda-note" data-comanda-id="${comanda.id}">Adicionar observacao</button>
+          <button class="btn secondary" type="button" data-action="print-comanda" data-comanda-id="${comanda.id}">Ver cupom</button>
+          ${canDeleteComanda ? `<button class="btn danger" type="button" data-action="delete-comanda" data-comanda-id="${comanda.id}">Excluir comanda</button>` : ""}
+          <button class="btn primary" type="button" data-action="toggle-finalize" data-comanda-id="${comanda.id}">${isFinalizeOpen ? "Fechar painel" : "Finalizar comanda"}</button>
         </div>`
         : ""
       }
@@ -5249,6 +5255,7 @@
         ${content}
         ${renderWaiterReadyModal()}
         ${renderComandaItemSelectorModal()}
+        ${renderDeleteComandaAuthModal()}
       </div>
     `;
   }
@@ -5923,6 +5930,122 @@
         </div>
       </div>
     `;
+  }
+
+  function closeDeleteComandaAuthModal(options = {}) {
+    uiState.deleteComandaAuth = {
+      open: false,
+      comandaId: ""
+    };
+    if (options.skipRender !== true) {
+      render();
+    }
+  }
+
+  function requestDeleteComanda(comandaId) {
+    const actor = currentActor();
+    if (!actor || (actor.role !== "waiter" && !isAdminOrDev(actor))) {
+      alert("Somente garcom ou administrador podem excluir comanda.");
+      return;
+    }
+
+    const comanda = findOpenComandaForActor(comandaId, actor, { silent: true });
+    if (!comanda) {
+      alert("Comanda nao encontrada na lista de comandas abertas.");
+      return;
+    }
+
+    const impact = computeComandaDeletionImpact(comanda);
+    const confirmText =
+      `Excluir completamente a comanda ${comanda.id}?\n` +
+      `Mesa/ref: ${comanda.table || "-"}\n` +
+      `Cliente: ${comanda.customer || "-"}\n` +
+      `Itens ativos: ${impact.activeItems}\n` +
+      `Reposicao estimada no estoque: ${impact.restoredQty} unidade(s).`;
+    if (!confirm(confirmText)) return;
+
+    uiState.deleteComandaAuth = {
+      open: true,
+      comandaId: String(comanda.id || "")
+    };
+    render();
+  }
+
+  function renderDeleteComandaAuthModal() {
+    const authState = uiState.deleteComandaAuth || {};
+    if (!authState.open || !authState.comandaId) return "";
+    const actor = currentActor();
+    if (!actor || (actor.role !== "waiter" && !isAdminOrDev(actor))) return "";
+    const comanda = findOpenComandaForActor(authState.comandaId, actor, { silent: true });
+    if (!comanda) return "";
+
+    const impact = computeComandaDeletionImpact(comanda);
+    return `
+      <div class="delete-comanda-modal-backdrop">
+        <div class="card delete-comanda-modal">
+          <h3>Confirmar exclusao da comanda ${esc(comanda.id)}</h3>
+          <p class="note" style="margin-top:0.35rem;">Informe os dados da conta conectada para concluir. Esta acao remove a comanda e repoe o estoque.</p>
+          <div class="delete-comanda-summary">
+            <div class="kpi"><p>Mesa/Ref.</p><b>${esc(comanda.table || "-")}</b></div>
+            <div class="kpi"><p>Cliente</p><b>${esc(comanda.customer || "-")}</b></div>
+            <div class="kpi"><p>Itens ativos</p><b>${impact.activeItems}</b></div>
+            <div class="kpi"><p>Reposicao no estoque</p><b>${impact.restoredQty}</b></div>
+          </div>
+          <form id="delete-comanda-auth-form" class="form delete-comanda-auth-form" autocomplete="off" style="margin-top:0.85rem;">
+            <div class="delete-comanda-auth-shell">
+              <div class="grid cols-2">
+                <div class="field">
+                  <label>Login da conta conectada</label>
+                  <input name="login" required value="${esc(String(actor.login || ""))}" placeholder="Digite seu login" />
+                </div>
+                <div class="field">
+                  <label>Senha da conta conectada</label>
+                  <input name="password" type="password" required placeholder="Digite sua senha" />
+                </div>
+              </div>
+            </div>
+            <div class="actions" style="margin-top:0.75rem;">
+              <button class="btn secondary" type="button" data-action="close-delete-comanda-auth">Cancelar</button>
+              <button class="btn danger" type="submit">Excluir comanda agora</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  function submitDeleteComandaAuth(form) {
+    const actor = currentActor();
+    if (!actor || (actor.role !== "waiter" && !isAdminOrDev(actor))) {
+      closeDeleteComandaAuthModal();
+      alert("Somente garcom ou administrador podem excluir comanda.");
+      return;
+    }
+
+    const targetComandaId = String(uiState.deleteComandaAuth?.comandaId || "").trim();
+    if (!targetComandaId) {
+      closeDeleteComandaAuthModal();
+      return;
+    }
+
+    const comanda = findOpenComandaForActor(targetComandaId, actor, { silent: true });
+    if (!comanda) {
+      closeDeleteComandaAuthModal();
+      alert("Comanda nao encontrada na lista de comandas abertas.");
+      return;
+    }
+
+    const loginValue = String(form.login?.value || "").trim();
+    const password = String(form.password?.value || "");
+    const expectedLogin = String(actor.login || "").trim();
+    const expectedPassword = actor.id === DEV_SESSION_ID ? DEV_ACCESS_PASSWORD : String(actor.password || "");
+    if (loginValue !== expectedLogin || password !== expectedPassword) {
+      alert("Login/senha invalidos para a conta conectada.");
+      return;
+    }
+
+    closeDeleteComandaAuthModal({ skipRender: true });
+    deleteComandaPermanently(comanda.id, actor);
   }
 
   function submitComandaItemSelector(form) {
@@ -7280,21 +7403,12 @@
     render();
   }
 
-  function deleteComandaPermanently(comandaId) {
-    const actor = currentActor();
-    if (!actor || (actor.role !== "waiter" && !isAdminOrDev(actor))) {
-      alert("Somente garcom ou administrador podem excluir comanda.");
-      return;
-    }
-
-    const comanda = findOpenComandaForActor(comandaId, actor);
-    if (!comanda) return;
-
+  function computeComandaDeletionImpact(comanda) {
     const restockRows = [];
     let restoredQty = 0;
     let restoredProducts = 0;
     let notFoundProducts = 0;
-    for (const item of comanda.items || []) {
+    for (const item of comanda?.items || []) {
       if (!item || item.canceled) continue;
       const qty = Math.max(0, parseNumber(item.qty || 0));
       if (!(qty > 0)) continue;
@@ -7307,21 +7421,30 @@
       restoredQty += qty;
       restoredProducts += 1;
     }
+    return {
+      restockRows,
+      restoredQty,
+      restoredProducts,
+      notFoundProducts,
+      activeItems: (comanda?.items || []).filter((item) => item && !item.canceled).length
+    };
+  }
 
-    const confirmText =
-      `Excluir completamente a comanda ${comanda.id}?\n` +
-      `Mesa/ref: ${comanda.table || "-"}\n` +
-      `Cliente: ${comanda.customer || "-"}\n` +
-      `Itens ativos: ${(comanda.items || []).filter((item) => item && !item.canceled).length}\n` +
-      `Reposicao estimada no estoque: ${restoredQty} unidade(s).`;
-    if (!confirm(confirmText)) return;
+  function deleteComandaPermanently(comandaId, actorOverride = null) {
+    const actor = actorOverride || currentActor();
+    if (!actor || (actor.role !== "waiter" && !isAdminOrDev(actor))) {
+      alert("Somente garcom ou administrador podem excluir comanda.");
+      return;
+    }
 
-    const authActor = confirmConnectedAccountCredentials(`excluir a comanda ${comanda.id}`, {
-      allowedRoles: ["waiter", "admin", "dev"]
-    });
-    if (!authActor) return;
+    const comanda = findOpenComandaForActor(comandaId, actor, { silent: true });
+    if (!comanda) {
+      alert("Comanda nao encontrada na lista de comandas abertas.");
+      return;
+    }
 
-    for (const row of restockRows) {
+    const impact = computeComandaDeletionImpact(comanda);
+    for (const row of impact.restockRows) {
       row.product.stock = Math.max(0, parseNumber(row.product.stock || 0) + row.qty);
     }
 
@@ -7334,13 +7457,13 @@
     if (uiState.comandaDetailsId === comanda.id) uiState.comandaDetailsId = null;
 
     appendAudit({
-      actor: authActor,
+      actor,
       type: "comanda_excluida",
       comandaId: comanda.id,
       detail:
         `Comanda ${comanda.id} excluida permanentemente. ` +
-        `Estoque reposto: ${restoredQty} unidade(s) em ${restoredProducts} item(ns).` +
-        `${notFoundProducts ? ` ${notFoundProducts} item(ns) sem produto vinculado para reposicao.` : ""}`
+        `Estoque reposto: ${impact.restoredQty} unidade(s) em ${impact.restoredProducts} item(ns).` +
+        `${impact.notFoundProducts ? ` ${impact.notFoundProducts} item(ns) sem produto vinculado para reposicao.` : ""}`
     });
 
     saveState();
@@ -8447,6 +8570,11 @@
         return;
       }
 
+      if (action === "close-delete-comanda-auth") {
+        closeDeleteComandaAuthModal();
+        return;
+      }
+
       if (action === "edit-product") {
         editProduct(Number(button.dataset.id));
         return;
@@ -8590,7 +8718,7 @@
       }
 
       if (action === "delete-comanda") {
-        deleteComandaPermanently(button.dataset.comandaId);
+        requestDeleteComanda(button.dataset.comandaId);
         return;
       }
 
@@ -8710,6 +8838,11 @@
 
       if (form.id === "close-cash-form") {
         closeCash(form);
+        return;
+      }
+
+      if (form.id === "delete-comanda-auth-form") {
+        submitDeleteComandaAuth(form);
       }
     } catch (err) {
       reportUiRuntimeError("submit", err);
