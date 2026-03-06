@@ -1981,8 +1981,12 @@
         return;
       }
       lastPushAt = Date.now();
-      adoptIncomingState(mergedForCloud);
+      // NÃO chamar adoptIncomingState aqui: isso substituía o state
+      // inteiro via normalizeStateShape, podendo descartar comandas
+      // criadas entre o snapshot (sanitized) e a conclusão do push.
+      state.meta = state.meta || {};
       state.meta.lastCloudSyncAt = isoNow();
+      stateVersion++;
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       } catch (_lsErr) { }
