@@ -1258,7 +1258,6 @@
     const shouldDropComanda = (comanda) => {
       if (!comanda || typeof comanda !== "object") return true;
       if (removedUserIds.has(String(comanda.createdBy || ""))) return true;
-      if (hasSystemTestMarker(comanda.table) || hasSystemTestMarker(comanda.customer)) return true;
       const hasTestEvents = (comanda.events || []).some(
         (event) => removedUserIds.has(String(event?.actorId || "")) || isSystemTestAuditEntry(event)
       );
