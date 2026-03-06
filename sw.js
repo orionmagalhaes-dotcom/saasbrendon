@@ -1,4 +1,4 @@
-const CACHE_NAME = "restobar-cache-v16";
+const CACHE_NAME = "restobar-cache-v17";
 const ASSETS = [
   "./",
   "./index.html",
@@ -53,7 +53,8 @@ async function cacheFirstStatic(request) {
 
 async function networkFirstStatic(request) {
   try {
-    const response = await fetch(request);
+    const networkRequest = new Request(request, { cache: "no-store" });
+    const response = await fetch(networkRequest);
     if (response && response.ok) {
       const cache = await caches.open(CACHE_NAME);
       await cache.put(request, response.clone());
