@@ -5001,9 +5001,18 @@
               </select>
             </div>
             <div class="field">
-              <label>Produto</label>
-              <select name="productId" data-role="item-product"></select>
+              <label>Buscar produto</label>
+              <input
+                type="search"
+                data-role="item-product-search"
+                placeholder="Digite para filtrar"
+                autocomplete="off"
+              />
             </div>
+          </div>
+          <div class="field">
+            <label>Produto</label>
+            <select name="productId" data-role="item-product"></select>
           </div>
           <div class="grid cols-2">
             <div class="field">
@@ -5620,11 +5629,7 @@
     });
 
     document.querySelectorAll('form[data-role="add-item-form"], form[data-role="fiado-add-item-form"]').forEach((form) => {
-      const categorySel = form.querySelector('[data-role="item-category"]');
-      const productSel = form.querySelector('[data-role="item-product"]');
-      fillProductSelect(productSel, categorySel.value);
-      updateKitchenEstimate(form);
-      updateDeliveryFields(form);
+      refreshComandaProductSelect(form);
     });
 
     document.querySelectorAll('[data-role="payment-method"]').forEach((select) => {
@@ -5689,23 +5694,71 @@
     noteInput.required = false;
   }
 
-  function fillProductSelect(selectElement, category) {
-    if (!selectElement) return;
-    const options = state.products.filter((p) => p.category === category);
+  function normalizeSearchText(value) {
+    const base = String(value || "").toLowerCase().trim();
+    try {
+      return base.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    } catch (_err) {
+      return base;
+    }
+  }
 
-    if (!options.length) {
+  function productMatchesSearch(product, normalizedSearch) {
+    if (!normalizedSearch) return true;
+    const idText = String(product?.id || "");
+    const nameText = String(product?.name || "");
+    const normalizedName = normalizeSearchText(nameText);
+    return normalizedName.includes(normalizedSearch) || idText.includes(normalizedSearch);
+  }
+
+  function refreshComandaProductSelect(form, options = {}) {
+    if (!form) return;
+    const categorySel = form.querySelector('[data-role="item-category"]');
+    const productSel = form.querySelector('[data-role="item-product"]');
+    if (!categorySel || !productSel) return;
+    const searchInput = form.querySelector('[data-role="item-product-search"]');
+    if (options.resetSearch && searchInput) {
+      searchInput.value = "";
+    }
+    const selectedValue = String(productSel.value || "").trim();
+    fillProductSelect(productSel, categorySel.value, {
+      selectedValue,
+      searchTerm: searchInput ? searchInput.value : ""
+    });
+    updateKitchenEstimate(form);
+    updateDeliveryFields(form);
+  }
+
+  function fillProductSelect(selectElement, category, options = {}) {
+    if (!selectElement) return;
+    const categoryOptions = state.products.filter((p) => p.category === category);
+    const normalizedSearch = normalizeSearchText(options.searchTerm);
+    const selectedValue = String(options.selectedValue !== undefined ? options.selectedValue : selectElement.value || "").trim();
+    const filteredOptions = normalizedSearch
+      ? categoryOptions.filter((product) => productMatchesSearch(product, normalizedSearch))
+      : categoryOptions;
+
+    if (!categoryOptions.length) {
       selectElement.innerHTML = `<option value="">Sem produtos</option>`;
       return;
     }
+    if (!filteredOptions.length) {
+      selectElement.innerHTML = `<option value="">Nenhum produto encontrado</option>`;
+      return;
+    }
 
-    selectElement.innerHTML = options
+    selectElement.innerHTML = filteredOptions
       .map(
         (p) =>
           `<option value="${p.id}" ${!productIsAvailable(p) ? "disabled" : ""}>${esc(p.name)}${p.category === "Ofertas" ? ` (${p.requiresKitchen ? "cozinha" : "pronta entrega"})` : ""} | ${money(p.price)} | estoque ${p.stock}${p.available === false ? " | indisponivel" : ""}</option>`
       )
       .join("");
 
-    const firstAvailable = options.find((p) => productIsAvailable(p));
+    if (selectedValue && filteredOptions.some((p) => String(p.id) === selectedValue && productIsAvailable(p))) {
+      selectElement.value = selectedValue;
+      return;
+    }
+    const firstAvailable = filteredOptions.find((p) => productIsAvailable(p));
     if (firstAvailable) {
       selectElement.value = String(firstAvailable.id);
     } else {
@@ -9228,10 +9281,7 @@
       if (target.matches('[data-role="item-category"]')) {
         const form = target.closest('form[data-role="add-item-form"], form[data-role="fiado-add-item-form"]');
         if (!form) return;
-        const productSel = form.querySelector('[data-role="item-product"]');
-        fillProductSelect(productSel, target.value);
-        updateKitchenEstimate(form);
-        updateDeliveryFields(form);
+        refreshComandaProductSelect(form, { resetSearch: true });
         return;
       }
 
@@ -9357,6 +9407,11 @@
       if (target.matches('[data-role="payment-amount"]')) {
         const form = target.closest('form[data-role="finalize-form"]');
         if (form) updateFinalizePaymentUi(form);
+        return;
+      }
+      if (target.matches('[data-role="item-product-search"]')) {
+        const form = target.closest('form[data-role="add-item-form"], form[data-role="fiado-add-item-form"]');
+        if (form) refreshComandaProductSelect(form);
         return;
       }
       if (target.matches('[data-role="waiter-catalog-search"]')) {
