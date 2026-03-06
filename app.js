@@ -265,6 +265,70 @@
     synchronizeCashOpenedAt(targetState);
   }
 
+  function comandaNumericPart(comandaId) {
+    const match = /^CMD-(\d+)/i.exec(String(comandaId || "").trim());
+    if (!match) return 0;
+    const value = Number(match[1]);
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  }
+
+  function collectComandaIdsFromState(targetState) {
+    const ids = new Set();
+    if (!targetState || typeof targetState !== "object") return ids;
+    for (const comanda of Array.isArray(targetState.openComandas) ? targetState.openComandas : []) {
+      const id = String(comanda?.id || "").trim();
+      if (id) ids.add(id);
+    }
+    for (const comanda of Array.isArray(targetState.closedComandas) ? targetState.closedComandas : []) {
+      const id = String(comanda?.id || "").trim();
+      if (id) ids.add(id);
+    }
+    for (const closure of Array.isArray(targetState.history90) ? targetState.history90 : []) {
+      for (const comanda of Array.isArray(closure?.commandas) ? closure.commandas : []) {
+        const id = String(comanda?.id || "").trim();
+        if (id) ids.add(id);
+      }
+    }
+    for (const deletedId of normalizeDeletedIdList(targetState?.meta?.deletedComandaIds)) {
+      const id = String(deletedId || "").trim();
+      if (id) ids.add(id);
+    }
+    return ids;
+  }
+
+  function recomputeComandaSequence(targetState) {
+    if (!targetState || typeof targetState !== "object") return;
+    targetState.seq = targetState.seq || {};
+    const current = Number(targetState.seq.comanda || 1);
+    let next = Number.isFinite(current) && current > 0 ? Math.floor(current) : 1;
+    const ids = collectComandaIdsFromState(targetState);
+    for (const id of ids) {
+      const numeric = comandaNumericPart(id);
+      if (numeric >= next) {
+        next = numeric + 1;
+      }
+    }
+    targetState.seq.comanda = Math.max(1, next);
+  }
+
+  function generateUniqueComandaId(targetState) {
+    if (!targetState || typeof targetState !== "object") return "";
+    recomputeComandaSequence(targetState);
+    const reservedIds = collectComandaIdsFromState(targetState);
+    const sessionChunkRaw = String(clientSessionId || "").replace(/[^a-z0-9]/gi, "");
+    const sessionChunk = (sessionChunkRaw.slice(-4) || "SESS").toUpperCase();
+    for (let attempt = 0; attempt < 200000; attempt += 1) {
+      const seqNumber = Number(targetState.seq?.comanda || 1);
+      targetState.seq.comanda = seqNumber + 1;
+      const timeChunk = Date.now().toString(36).slice(-4).toUpperCase();
+      const randomChunk = Math.random().toString(36).slice(2, 4).toUpperCase();
+      const candidate = `CMD-${String(seqNumber).padStart(4, "0")}-${sessionChunk}${timeChunk}${randomChunk}`;
+      if (reservedIds.has(candidate)) continue;
+      return candidate;
+    }
+    return "";
+  }
+
   function browserNameFromUa(uaRaw) {
     const ua = String(uaRaw || "").toLowerCase();
     if (ua.includes("edg/")) return "Edge";
@@ -962,6 +1026,7 @@
     const maxProductId = Math.max(0, ...(Array.isArray(merged.products) ? merged.products : []).map((p) => Number(p?.id || 0)));
     merged.seq.user = Math.max(Number(merged.seq.user || 0), maxUserId + 1);
     merged.seq.product = Math.max(Number(merged.seq.product || 0), maxProductId + 1);
+    recomputeComandaSequence(merged);
     return merged;
   }
 
@@ -1628,6 +1693,7 @@
     applyFinalClientPreparation(recovered);
     applyOperationalResetCutoff(recovered, recovered.meta?.operationalResetAt);
     sanitizeOperationalComandasAgainstHistory(recovered);
+    recomputeComandaSequence(recovered);
     ensureCatalogBackup(recovered, "normalize");
     pruneHistory(recovered);
     prunePayables(recovered);
@@ -7098,34 +7164,7 @@
       return;
     }
 
-    state.seq = state.seq || {};
-    const seqRaw = Number(state.seq.comanda || 1);
-    state.seq.comanda = Number.isFinite(seqRaw) && seqRaw > 0 ? Math.floor(seqRaw) : 1;
-    const usedComandaIds = new Set();
-    for (const entry of Array.isArray(state.openComandas) ? state.openComandas : []) {
-      const id = String(entry?.id || "").trim();
-      if (id) usedComandaIds.add(id);
-    }
-    for (const entry of Array.isArray(state.closedComandas) ? state.closedComandas : []) {
-      const id = String(entry?.id || "").trim();
-      if (id) usedComandaIds.add(id);
-    }
-    for (const closure of Array.isArray(state.history90) ? state.history90 : []) {
-      for (const entry of Array.isArray(closure?.commandas) ? closure.commandas : []) {
-        const id = String(entry?.id || "").trim();
-        if (id) usedComandaIds.add(id);
-      }
-    }
-    const deletedComandaIds = new Set(normalizeDeletedIdList(state?.meta?.deletedComandaIds));
-    let comandaId = "";
-    for (let attempt = 0; attempt < 200000; attempt += 1) {
-      const candidate = `CMD-${String(state.seq.comanda).padStart(4, "0")}`;
-      state.seq.comanda += 1;
-      if (usedComandaIds.has(candidate)) continue;
-      if (deletedComandaIds.has(candidate)) continue;
-      comandaId = candidate;
-      break;
-    }
+    const comandaId = generateUniqueComandaId(state);
     if (!comandaId) {
       alert("Nao foi possivel gerar um novo ID de comanda.");
       return;
