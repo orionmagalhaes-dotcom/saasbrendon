@@ -7045,8 +7045,41 @@
       return;
     }
 
+    state.seq = state.seq || {};
+    const seqRaw = Number(state.seq.comanda || 1);
+    state.seq.comanda = Number.isFinite(seqRaw) && seqRaw > 0 ? Math.floor(seqRaw) : 1;
+    const usedComandaIds = new Set();
+    for (const entry of Array.isArray(state.openComandas) ? state.openComandas : []) {
+      const id = String(entry?.id || "").trim();
+      if (id) usedComandaIds.add(id);
+    }
+    for (const entry of Array.isArray(state.closedComandas) ? state.closedComandas : []) {
+      const id = String(entry?.id || "").trim();
+      if (id) usedComandaIds.add(id);
+    }
+    for (const closure of Array.isArray(state.history90) ? state.history90 : []) {
+      for (const entry of Array.isArray(closure?.commandas) ? closure.commandas : []) {
+        const id = String(entry?.id || "").trim();
+        if (id) usedComandaIds.add(id);
+      }
+    }
+    const deletedComandaIds = new Set(normalizeDeletedIdList(state?.meta?.deletedComandaIds));
+    let comandaId = "";
+    for (let attempt = 0; attempt < 200000; attempt += 1) {
+      const candidate = `CMD-${String(state.seq.comanda).padStart(4, "0")}`;
+      state.seq.comanda += 1;
+      if (usedComandaIds.has(candidate)) continue;
+      if (deletedComandaIds.has(candidate)) continue;
+      comandaId = candidate;
+      break;
+    }
+    if (!comandaId) {
+      alert("Nao foi possivel gerar um novo ID de comanda.");
+      return;
+    }
+
     const comanda = {
-      id: `CMD-${String(state.seq.comanda++).padStart(4, "0")}`,
+      id: comandaId,
       table,
       customer,
       createdAt,
