@@ -9040,29 +9040,38 @@
       const openedAtForWindowTs = parseUpdatedAtTimestamp(state.cash?.openedAt);
       const closedAt = openedAtForWindowTs && configuredClosedAtTs && openedAtForWindowTs > configuredClosedAtTs ? state.cash.openedAt : configuredClosedAt;
       const nextCashOpenedAt = buildLocalHourIso(CASH_OPEN_HOUR, 0, isoNow()) || isoNow();
+      const nextCashOpenedAtTs = parseUpdatedAtTimestamp(nextCashOpenedAt);
       const windowStart = state.cash?.openedAt || "";
+      const allClosedComandas = dedupeComandasById(state.closedComandas);
 
       const closureDraft = buildCashClosureDraft(closedAt, {
         openedAt: windowStart,
         windowEndAt: closedAt
       });
+      const cutoffForNewCashTs = nextCashOpenedAtTs || configuredClosedAtTs || 0;
+      const archivedBeforeNewCashComandas = allClosedComandas.filter((comanda) => {
+        const comandaTs = comandaReferenceTimestamp(comanda);
+        return comandaTs > 0 && comandaTs < cutoffForNewCashTs;
+      });
       const archivedClosedComandaIds = new Set(
-        closureDraft.commandas
+        [...closureDraft.commandas, ...archivedBeforeNewCashComandas]
           .map((comanda) => String(comanda?.id || "").trim())
           .filter(Boolean)
       );
-      const preservedClosedComandas = dedupeComandasById(state.closedComandas).filter((comanda) => {
+      const preservedClosedComandas = allClosedComandas.filter((comanda) => {
         const id = String(comanda?.id || "").trim();
         return id ? !archivedClosedComandaIds.has(id) : true;
       });
-      const periodOpenedAt = earliestComandaCreatedAtIso(closureDraft.commandas) || windowStart || "";
+      const periodOpenedAt =
+        earliestComandaCreatedAtIso([...closureDraft.commandas, ...archivedBeforeNewCashComandas]) || windowStart || "";
       const periodStartTs = parseUpdatedAtTimestamp(windowStart);
       const closureCutoffTs = parseUpdatedAtTimestamp(closedAt);
+      const archiveWindowEndTs = Math.max(closureCutoffTs, cutoffForNewCashTs);
       const closureAuditWindowLog = (state.auditLog || []).filter((event) => {
         const eventTs = parseUpdatedAtTimestamp(event?.ts);
         if (!eventTs) return false;
         if (periodStartTs && eventTs < periodStartTs) return false;
-        if (closureCutoffTs && eventTs > closureCutoffTs) return false;
+        if (archiveWindowEndTs && eventTs > archiveWindowEndTs) return false;
         return true;
       });
 
@@ -9082,7 +9091,7 @@
         cashId: state.cash.id,
         openedAt: periodOpenedAt,
         closedAt,
-        commandas: closureDraft.commandas,
+        commandas: dedupeComandasById([...closureDraft.commandas, ...archivedBeforeNewCashComandas]),
         auditLog: [
           {
             id: `EV-${state.seq.event++}`,
@@ -9105,7 +9114,7 @@
       state.closedComandas = preservedClosedComandas;
       state.auditLog = (state.auditLog || []).filter((event) => {
         const eventTs = parseUpdatedAtTimestamp(event?.ts);
-        return eventTs && eventTs > (closureCutoffTs || 0);
+        return eventTs && eventTs >= (cutoffForNewCashTs || 0);
       });
       state.meta = state.meta || {};
       state.meta.realtimeAuditResetAt = nextCashOpenedAt || closedAt;
