@@ -322,6 +322,99 @@ function money(value) {
     return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(parseNumber(value || 0));
 }
 
+const PAYMENT_METHODS = [
+    { value: "pix", label: "Pix" },
+    { value: "cartao", label: "Cartao" },
+    { value: "dinheiro", label: "Dinheiro" },
+    { value: "fiado", label: "Fiado" }
+];
+
+function paymentLabel(method) {
+    if (method === "multiplo") return "Multiplo";
+    if (method === "nao_finalizada") return "Nao finalizada";
+    if (method === "sem_cobranca") return "Sem cobranca";
+    return PAYMENT_METHODS.find((p) => p.value === method)?.label || method;
+}
+
+function normalizePaymentSplits(splits) {
+    const validMethods = new Set([...PAYMENT_METHODS.map((entry) => entry.value), "sem_cobranca"]);
+    const byMethod = new Map();
+    for (const row of Array.isArray(splits) ? splits : []) {
+        const method = String(row?.method || "").trim();
+        if (!validMethods.has(method)) continue;
+        const amount = Math.max(0, parseNumber(row?.amount || 0));
+        if (method === "sem_cobranca") {
+            byMethod.set(method, 0);
+            continue;
+        }
+        if (!(amount > 0)) continue;
+        byMethod.set(method, Number(byMethod.get(method) || 0) + amount);
+    }
+    return [...byMethod.entries()].map(([method, amount]) => ({ method, amount }));
+}
+
+function paymentSplitsText(splits, options = {}) {
+    const includeAmount = options.includeAmount !== false;
+    const rows = normalizePaymentSplits(splits);
+    if (!rows.length) return paymentLabel(options.emptyLabel || "nao_finalizada");
+    if (rows.length === 1 && rows[0].method === "sem_cobranca") {
+        return paymentLabel("sem_cobranca");
+    }
+    if (!includeAmount) {
+        if (rows.length === 1) return paymentLabel(rows[0].method);
+        return rows.map((row) => paymentLabel(row.method)).join(" + ");
+    }
+    return rows.map((row) => `${paymentLabel(row.method)} ${money(row.amount)}`).join(" + ");
+}
+
+function parseFinalizePaymentRows(rawRows, total) {
+    const validMethods = new Set(PAYMENT_METHODS.map((entry) => entry.value));
+    const normalizedTotal = Math.max(0, parseNumber(total || 0));
+    const isZeroTotal = normalizedTotal <= 0.01;
+    const chosenRows = [];
+    for (const row of Array.isArray(rawRows) ? rawRows : []) {
+        const method = String(row?.method || "").trim();
+        const amount = Math.max(0, parseNumber(row?.amountRaw !== undefined ? row.amountRaw : row?.amount || 0));
+        const rowName = String(row?.rowName || "pagamento").trim() || "pagamento";
+        if (!method && !(amount > 0)) continue;
+        if (!method && amount > 0) {
+            return { error: `Informe a forma do ${rowName}.` };
+        }
+        if (!method) continue;
+        if (!validMethods.has(method)) {
+            return { error: `Forma de pagamento invalida no ${rowName}.` };
+        }
+        if (!(amount > 0)) {
+            if (isZeroTotal) continue;
+            return { error: `Informe valor maior que zero para ${paymentLabel(method)}.` };
+        }
+        chosenRows.push({ method, amount });
+    }
+
+    if (isZeroTotal) {
+        const totalPaid = chosenRows.reduce((sum, row) => sum + parseNumber(row.amount || 0), 0);
+        if (Math.abs(totalPaid - normalizedTotal) > 0.01) {
+            return {
+                error: `A soma dos pagamentos (${money(totalPaid)}) precisa ser igual ao total da comanda (${money(normalizedTotal)}).`
+            };
+        }
+        return { value: [{ method: "sem_cobranca", amount: 0 }] };
+    }
+
+    if (!chosenRows.length) {
+        return { error: "Informe ao menos uma forma de pagamento." };
+    }
+
+    const splits = normalizePaymentSplits(chosenRows);
+    const totalPaid = splits.reduce((sum, row) => sum + parseNumber(row.amount || 0), 0);
+    if (Math.abs(totalPaid - normalizedTotal) > 0.01) {
+        return {
+            error: `A soma dos pagamentos (${money(totalPaid)}) precisa ser igual ao total da comanda (${money(normalizedTotal)}).`
+        };
+    }
+    return { value: splits };
+}
+
 function hasSystemTestMarker(value) {
     const SYSTEM_TEST_MARKERS = ["teste", "test", "mock", "pixteste", "cupom de teste"];
     const lower = String(value || "").toLowerCase().trim();
@@ -680,6 +773,35 @@ section("money");
 
     const r3 = money("15,75");
     assert(r3.includes("15,75"), "string com virgula");
+}
+
+section("parseFinalizePaymentRows / paymentSplitsText");
+{
+    const zeroTotal = parseFinalizePaymentRows(
+        [
+            { method: "pix", amountRaw: "0", rowName: "pagamento principal" },
+            { method: "", amountRaw: "0", rowName: "pagamento complementar 1" }
+        ],
+        0
+    );
+    assertDeepEqual(zeroTotal.value, [{ method: "sem_cobranca", amount: 0 }], "total zero vira sem cobranca");
+    assertEqual(paymentSplitsText(zeroTotal.value, { includeAmount: true }), "Sem cobranca", "texto de total zero nao exige valor");
+
+    const positiveTotalMissing = parseFinalizePaymentRows(
+        [
+            { method: "pix", amountRaw: "0", rowName: "pagamento principal" }
+        ],
+        10
+    );
+    assertEqual(positiveTotalMissing.error, "Informe valor maior que zero para Pix.", "total positivo continua exigindo valor");
+
+    const positiveTotalOk = parseFinalizePaymentRows(
+        [
+            { method: "pix", amountRaw: "10", rowName: "pagamento principal" }
+        ],
+        10
+    );
+    assertDeepEqual(positiveTotalOk.value, [{ method: "pix", amount: 10 }], "total positivo com valor correto continua valido");
 }
 
 section("hasSystemTestMarker");

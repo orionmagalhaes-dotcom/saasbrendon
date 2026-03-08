@@ -2614,16 +2614,21 @@
   function paymentLabel(method) {
     if (method === "multiplo") return "Multiplo";
     if (method === "nao_finalizada") return "Nao finalizada";
+    if (method === "sem_cobranca") return "Sem cobranca";
     return PAYMENT_METHODS.find((p) => p.value === method)?.label || method;
   }
 
   function normalizePaymentSplits(splits) {
-    const validMethods = new Set(PAYMENT_METHODS.map((entry) => entry.value));
+    const validMethods = new Set([...PAYMENT_METHODS.map((entry) => entry.value), "sem_cobranca"]);
     const byMethod = new Map();
     for (const row of Array.isArray(splits) ? splits : []) {
       const method = String(row?.method || "").trim();
       if (!validMethods.has(method)) continue;
       const amount = Math.max(0, parseNumber(row?.amount || 0));
+      if (method === "sem_cobranca") {
+        byMethod.set(method, 0);
+        continue;
+      }
       if (!(amount > 0)) continue;
       byMethod.set(method, Number(byMethod.get(method) || 0) + amount);
     }
@@ -2645,6 +2650,9 @@
     const includeAmount = options.includeAmount !== false;
     const rows = normalizePaymentSplits(splits);
     if (!rows.length) return paymentLabel(options.emptyLabel || "nao_finalizada");
+    if (rows.length === 1 && rows[0].method === "sem_cobranca") {
+      return paymentLabel("sem_cobranca");
+    }
     if (!includeAmount) {
       if (rows.length === 1) return paymentLabel(rows[0].method);
       return rows.map((row) => paymentLabel(row.method)).join(" + ");
@@ -5061,10 +5069,13 @@
     const total = comandaTotal(comanda);
     const totalFixed = Number(total || 0).toFixed(2);
     const methodOptions = PAYMENT_METHODS.map((m) => `<option value="${m.value}">${m.label}</option>`).join("");
+    const zeroTotalNote = Math.max(0, parseNumber(total || 0)) <= 0.01
+      ? `<div class="note">Esta comanda totaliza ${money(0)}. Voce pode finalizar sem informar pagamento.</div>`
+      : `<div class="note">Confira dados e escolha uma ou mais formas de pagamento. A soma deve bater com o total da comanda.</div>`;
     return `
       <form class="card form" data-role="finalize-form" data-comanda-id="${comanda.id}">
         <h4>Finalizacao da comanda ${esc(displayComandaId(comanda.id))}</h4>
-        <div class="note">Confira dados e escolha uma ou mais formas de pagamento. A soma deve bater com o total da comanda.</div>
+        ${zeroTotalNote}
         <div class="grid cols-2">
           <div class="field">
             <label>Pagamento principal</label>
@@ -8469,16 +8480,63 @@
       render();
       return;
     }
-    if (uiState.finalizeOpenByComanda[comandaId] && comanda && !comanda.pixCodeDraft) {
+    if (uiState.finalizeOpenByComanda[comandaId] && comanda && comandaTotal(comanda) > 0 && !comanda.pixCodeDraft) {
       comanda.pixCodeDraft = generatePixCode();
       saveState();
     }
     render();
   }
 
-  function parseFinalizePaymentSplits(form, total) {
+  function parseFinalizePaymentRows(rawRows, total) {
     const validMethods = new Set(PAYMENT_METHODS.map((entry) => entry.value));
-    const rawRows = [
+    const normalizedTotal = Math.max(0, parseNumber(total || 0));
+    const isZeroTotal = normalizedTotal <= 0.01;
+    const chosenRows = [];
+    for (const row of Array.isArray(rawRows) ? rawRows : []) {
+      const method = String(row?.method || "").trim();
+      const amount = Math.max(0, parseNumber(row?.amountRaw !== undefined ? row.amountRaw : row?.amount || 0));
+      const rowName = String(row?.rowName || "pagamento").trim() || "pagamento";
+      if (!method && !(amount > 0)) continue;
+      if (!method && amount > 0) {
+        return { error: `Informe a forma do ${rowName}.` };
+      }
+      if (!method) continue;
+      if (!validMethods.has(method)) {
+        return { error: `Forma de pagamento invalida no ${rowName}.` };
+      }
+      if (!(amount > 0)) {
+        if (isZeroTotal) continue;
+        return { error: `Informe valor maior que zero para ${paymentLabel(method)}.` };
+      }
+      chosenRows.push({ method, amount });
+    }
+
+    if (isZeroTotal) {
+      const totalPaid = chosenRows.reduce((sum, row) => sum + parseNumber(row.amount || 0), 0);
+      if (Math.abs(totalPaid - normalizedTotal) > 0.01) {
+        return {
+          error: `A soma dos pagamentos (${money(totalPaid)}) precisa ser igual ao total da comanda (${money(normalizedTotal)}).`
+        };
+      }
+      return { value: [{ method: "sem_cobranca", amount: 0 }] };
+    }
+
+    if (!chosenRows.length) {
+      return { error: "Informe ao menos uma forma de pagamento." };
+    }
+
+    const splits = normalizePaymentSplits(chosenRows);
+    const totalPaid = splits.reduce((sum, row) => sum + parseNumber(row.amount || 0), 0);
+    if (Math.abs(totalPaid - normalizedTotal) > 0.01) {
+      return {
+        error: `A soma dos pagamentos (${money(totalPaid)}) precisa ser igual ao total da comanda (${money(normalizedTotal)}).`
+      };
+    }
+    return { value: splits };
+  }
+
+  function parseFinalizePaymentSplits(form, total) {
+    return parseFinalizePaymentRows([
       {
         method: String(form.paymentMethodPrimary?.value || "").trim(),
         amountRaw: String(form.paymentAmountPrimary?.value || "0").trim(),
@@ -8494,36 +8552,7 @@
         amountRaw: String(form.paymentAmountExtra2?.value || "0").trim(),
         rowName: "pagamento complementar 2"
       }
-    ];
-
-    const chosenRows = [];
-    for (const row of rawRows) {
-      const amount = Math.max(0, parseNumber(row.amountRaw));
-      if (!row.method && !(amount > 0)) continue;
-      if (!row.method && amount > 0) {
-        return { error: `Informe a forma do ${row.rowName}.` };
-      }
-      if (!validMethods.has(row.method)) {
-        return { error: `Forma de pagamento invalida no ${row.rowName}.` };
-      }
-      if (!(amount > 0)) {
-        return { error: `Informe valor maior que zero para ${paymentLabel(row.method)}.` };
-      }
-      chosenRows.push({ method: row.method, amount });
-    }
-
-    if (!chosenRows.length) {
-      return { error: "Informe ao menos uma forma de pagamento." };
-    }
-
-    const splits = normalizePaymentSplits(chosenRows);
-    const totalPaid = splits.reduce((sum, row) => sum + parseNumber(row.amount || 0), 0);
-    if (Math.abs(totalPaid - parseNumber(total || 0)) > 0.01) {
-      return {
-        error: `A soma dos pagamentos (${money(totalPaid)}) precisa ser igual ao total da comanda (${money(total)}).`
-      };
-    }
-    return { value: splits };
+    ], total);
   }
 
   function updateFinalizePaymentUi(form) {
@@ -8536,6 +8565,7 @@
     const comandaId = String(form.dataset.comandaId || "");
     const comanda = findOpenComanda(comandaId);
     const total = comanda ? comandaTotal(comanda) : 0;
+    const isZeroTotal = Math.max(0, parseNumber(total || 0)) <= 0.01;
     const selectedMethods = [
       String(form.paymentMethodPrimary?.value || "").trim(),
       String(form.paymentMethodExtra1?.value || "").trim(),
@@ -8548,27 +8578,33 @@
     const hasPix = selectedMethods.includes("pix");
     const hasNonFiado = selectedMethods.some((method) => method !== "fiado");
 
-    if (fiadoBox) fiadoBox.style.display = hasFiado ? "grid" : "none";
-    if (pixBox) pixBox.style.display = hasPix ? "grid" : "none";
+    if (fiadoBox) fiadoBox.style.display = !isZeroTotal && hasFiado ? "grid" : "none";
+    if (pixBox) pixBox.style.display = !isZeroTotal && hasPix ? "grid" : "none";
     if (manualCheck) {
-      manualCheck.disabled = !hasNonFiado;
-      if (!hasNonFiado) manualCheck.checked = false;
+      manualCheck.disabled = isZeroTotal || !hasNonFiado;
+      if (isZeroTotal || !hasNonFiado) manualCheck.checked = false;
     }
     if (manualCheckNote) {
-      manualCheckNote.style.display = hasNonFiado ? "none" : "block";
-      manualCheckNote.textContent = hasNonFiado ? "" : "Quando a comanda e totalmente no fiado, essa confirmacao e dispensada.";
+      manualCheckNote.style.display = isZeroTotal || !hasNonFiado ? "block" : "none";
+      manualCheckNote.textContent = isZeroTotal
+        ? "Comanda com total zerado: finalize sem informar pagamento."
+        : hasNonFiado
+          ? ""
+          : "Quando a comanda e totalmente no fiado, essa confirmacao e dispensada.";
     }
 
     if (breakdownNote) {
       if (parsed.error) {
         breakdownNote.textContent = parsed.error;
+      } else if (isZeroTotal) {
+        breakdownNote.textContent = "Comanda zerada. Nenhum pagamento precisa ser informado para finalizar.";
       } else {
         const paid = splits.reduce((sum, row) => sum + parseNumber(row.amount || 0), 0);
         breakdownNote.textContent = `Pagamento informado: ${paymentSplitsText(splits, { includeAmount: true })} | Total conferido: ${money(paid)}.`;
       }
     }
 
-    if (hasPix && comanda) {
+    if (!isZeroTotal && hasPix && comanda) {
       if (!comanda.pixCodeDraft) {
         comanda.pixCodeDraft = generatePixCode();
       }
@@ -8599,7 +8635,7 @@
     const paymentSplits = parsedSplits.value || [];
     const hasFiado = paymentSplits.some((row) => row.method === "fiado");
     const hasPix = paymentSplits.some((row) => row.method === "pix");
-    const requiresManualCheck = paymentSplits.some((row) => row.method !== "fiado");
+    const requiresManualCheck = paymentSplits.some((row) => row.method !== "fiado" && row.method !== "sem_cobranca");
 
     if (requiresManualCheck && !manualCheck) {
       alert("Confirme manualmente o pagamento antes de finalizar.");
@@ -8620,7 +8656,7 @@
     }
 
     const normalizedSplits = normalizePaymentSplits(paymentSplits);
-    const paymentMethod = normalizedSplits.length === 1 ? normalizedSplits[0].method : "multiplo";
+    const paymentMethod = normalizedSplits.length === 1 ? normalizedSplits[0].method : normalizedSplits.length ? "multiplo" : "nao_finalizada";
     const fiadoAmount = normalizedSplits
       .filter((entry) => entry.method === "fiado")
       .reduce((sum, entry) => sum + parseNumber(entry.amount || 0), 0);
