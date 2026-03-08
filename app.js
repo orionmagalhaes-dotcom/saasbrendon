@@ -272,6 +272,18 @@
     return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
   }
 
+  function displayComandaId(comandaId) {
+    const raw = String(comandaId || "").trim();
+    if (!raw) return "-";
+    const match = /^(CMD-\d+)/i.exec(raw);
+    if (!match) return raw;
+    return match[1].toUpperCase();
+  }
+
+  function maskComandaCodesInText(value) {
+    return String(value ?? "").replace(/\b(CMD-\d+)-[A-Z0-9]+\b/gi, (_full, base) => String(base || "").toUpperCase());
+  }
+
   function collectComandaIdsFromState(targetState) {
     const ids = new Set();
     if (!targetState || typeof targetState !== "object") return ids;
@@ -3369,7 +3381,7 @@
         ? `<div class="table-wrap payables-wrap" style="margin-top:0.75rem;"><table class="responsive-stack payables-table payables-table-pending"><thead><tr><th>Comanda</th><th>Cliente</th><th>Total pendente</th><th>Criado em</th><th>Acoes</th></tr></thead><tbody>${pending
           .map((p) => {
             const customerName = String(p.customerName || "").trim() || "-";
-            return `<tr data-payable-id="${esc(p.id)}" class="payable-row"><td data-label="Comanda"><div class="payable-comanda-cell"><b>${esc(p.comandaId)}</b></div></td><td data-label="Cliente">${esc(customerName)}</td><td data-label="Total pendente"><b>${money(p.total)}</b></td><td data-label="Criado em">${formatDate(p.createdAt)}</td><td data-label="Acoes">${canManage
+            return `<tr data-payable-id="${esc(p.id)}" class="payable-row"><td data-label="Comanda"><div class="payable-comanda-cell"><b>${esc(displayComandaId(p.comandaId))}</b></div></td><td data-label="Cliente">${esc(customerName)}</td><td data-label="Total pendente"><b>${money(p.total)}</b></td><td data-label="Criado em">${formatDate(p.createdAt)}</td><td data-label="Acoes">${canManage
               ? `<div class="actions payable-actions"><button class="btn secondary compact-action" type="button" data-action="open-comanda-edit-flow" data-comanda-id="${esc(p.comandaId)}">Editar</button><button class="btn ok compact-action" type="button" data-action="receive-payable" data-id="${esc(p.id)}">Marcar como pago</button></div>`
               : `<span class="note">Somente admin/dev</span>`}</td></tr>`;
           })
@@ -3382,7 +3394,7 @@
         ? `<div class="table-wrap payables-wrap" style="margin-top:0.75rem;"><table class="responsive-stack payables-table payables-table-paid"><thead><tr><th>Comanda</th><th>Cliente</th><th>Total</th><th>Pago em</th><th>Metodo</th><th>Ajustes</th></tr></thead><tbody>${paid
           .map(
             (p) =>
-              `<tr><td data-label="Comanda">${esc(p.comandaId)}</td><td data-label="Cliente">${esc(p.customerName)}</td><td data-label="Total">${money(p.total)}</td><td data-label="Pago em">${formatDateTime(p.paidAt)}</td><td data-label="Metodo">${esc(paymentLabel(p.paidMethod || ""))}</td><td data-label="Ajustes">${Array.isArray(p.adjustments) ? p.adjustments.length : 0}</td></tr>`
+              `<tr><td data-label="Comanda">${esc(displayComandaId(p.comandaId))}</td><td data-label="Cliente">${esc(p.customerName)}</td><td data-label="Total">${money(p.total)}</td><td data-label="Pago em">${formatDateTime(p.paidAt)}</td><td data-label="Metodo">${esc(paymentLabel(p.paidMethod || ""))}</td><td data-label="Ajustes">${Array.isArray(p.adjustments) ? p.adjustments.length : 0}</td></tr>`
           )
           .join("")}</tbody></table></div>`
         : `<div class="empty" style="margin-top:0.75rem;">Sem registros pagos.</div>`}
@@ -3874,7 +3886,7 @@
       .map((w) => `<tr><td>${esc(w.name)}</td><td class="center">${w.comandas}</td><td class="right">${money(w.vendido)}</td><td class="right">${money(w.recebido)}</td></tr>`)
       .join("");
     const comandaRows = ordered
-      .map((c) => `<tr><td>${esc(c.id || "-")}</td><td>${esc(formatDateTime(c.createdAt))}</td><td>${esc(formatDateTime(c.closedAt || "-"))}</td><td>${esc(resolveComandaResponsibleName(c))}</td><td>${esc(c.table || "-")}</td><td>${esc(c.customer || "-")}</td><td>${esc(closureStatusLabel(c.status))}</td><td class="right">${money(comandaTotal(c))}</td><td>${esc(comandaPaymentText(c, { includeAmount: true, totalFallback: comandaTotal(c) }))}</td></tr>`)
+      .map((c) => `<tr><td>${esc(displayComandaId(c.id || "-"))}</td><td>${esc(formatDateTime(c.createdAt))}</td><td>${esc(formatDateTime(c.closedAt || "-"))}</td><td>${esc(resolveComandaResponsibleName(c))}</td><td>${esc(c.table || "-")}</td><td>${esc(c.customer || "-")}</td><td>${esc(closureStatusLabel(c.status))}</td><td class="right">${money(comandaTotal(c))}</td><td>${esc(comandaPaymentText(c, { includeAmount: true, totalFallback: comandaTotal(c) }))}</td></tr>`)
       .join("");
     const financeiro = {
       bruto: summary.total,
@@ -4022,7 +4034,7 @@
     });
     const auditEvents = dedupeAuditEvents([...state.auditLog]).sort((a, b) => new Date(a.ts || 0) - new Date(b.ts || 0));
     const auditRows = auditEvents.length
-      ? auditEvents.map((e) => `<tr><td>${esc(formatDateTime(e.ts))}</td><td>${esc(e.actorName || "-")} (${esc(roleLabel(e.actorRole || "-"))})</td><td>${esc(eventTypeLabel(e.type || "-"))}</td><td>${esc(e.comandaId || "-")}</td><td>${esc(e.detail || "-")}</td></tr>`).join("")
+      ? auditEvents.map((e) => `<tr><td>${esc(formatDateTime(e.ts))}</td><td>${esc(e.actorName || "-")} (${esc(roleLabel(e.actorRole || "-"))})</td><td>${esc(eventTypeLabel(e.type || "-"))}</td><td>${esc(displayComandaId(e.comandaId || "-"))}</td><td>${esc(maskComandaCodesInText(e.detail || "-"))}</td></tr>`).join("")
       : `<tr><td colspan="5">Sem eventos registrados.</td></tr>`;
     const auditSection = `
       <h2>Registro completo de alteracoes do dia</h2>
@@ -4071,7 +4083,7 @@
     const baseHtml = buildCashHistoryPrintHtml(closure, reportOptions);
     const auditEvents = dedupeAuditEvents([...(closure.auditLog || [])]).sort((a, b) => new Date(a.ts || 0) - new Date(b.ts || 0));
     const auditRows = auditEvents.length
-      ? auditEvents.map((e) => `<tr><td>${esc(formatDateTime(e.ts))}</td><td>${esc(e.actorName || "-")} (${esc(roleLabel(e.actorRole || "-"))})</td><td>${esc(eventTypeLabel(e.type || "-"))}</td><td>${esc(e.comandaId || "-")}</td><td>${esc(e.detail || "-")}</td></tr>`).join("")
+      ? auditEvents.map((e) => `<tr><td>${esc(formatDateTime(e.ts))}</td><td>${esc(e.actorName || "-")} (${esc(roleLabel(e.actorRole || "-"))})</td><td>${esc(eventTypeLabel(e.type || "-"))}</td><td>${esc(displayComandaId(e.comandaId || "-"))}</td><td>${esc(maskComandaCodesInText(e.detail || "-"))}</td></tr>`).join("")
       : `<tr><td colspan="5">Sem eventos registrados para este caixa.</td></tr>`;
     const auditSection = `
       <h2>Registro completo de alteracoes arquivadas</h2>
@@ -4148,13 +4160,13 @@
       .join("");
     const comandaEvents = (comanda.events || []).slice(-40).reverse();
     const events = comandaEvents
-      .map((e) => `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName)}</td><td>${renderEventTypeTag(e.type)}</td><td>${esc(e.detail)}</td></tr>`)
+      .map((e) => `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName)}</td><td>${renderEventTypeTag(e.type)}</td><td>${esc(maskComandaCodesInText(e.detail))}</td></tr>`)
       .join("");
 
     return `
       <div class="detail-box" style="margin-top:0.75rem;">
         <div class="detail-header">
-          <h4>Detalhes da comanda</h4>
+          <h4>Detalhes da comanda ${esc(displayComandaId(comanda.id))}</h4>
           <button class="btn secondary" data-action="close-comanda-details">Fechar</button>
         </div>
         <p class="note">Mesa: ${esc(comanda.table)} | Cliente: ${esc(comanda.customer || "-")} | Status: ${esc(comanda.status || "aberta")}</p>
@@ -4268,7 +4280,7 @@
           return `
               <details class="compact-details ${statusClass}" data-persist-key="${esc(comandaDetailKey)}" style="margin-top:0.65rem;"${detailOpenAttr(comandaDetailKey)}>
                 <summary>
-                  <span class="tag ${isClosed ? "status-comanda-fechada" : "status-comanda-aberta"}">${statusText}</span>${hasDeliveryRequested ? ` | <span class="tag">Entrega solicitada (${deliveryRequestedCount})</span>` : ""}${kitchenBadgeCompact ? ` | ${kitchenBadgeCompact}` : ""} | Mesa/ref: ${esc(comanda.table || "-")} | Garcom: ${esc(waiterName)} | Cliente: ${esc(comanda.customer || "-")} | Itens: ${validItems} | Total: ${money(comandaTotal(comanda))}
+                  <b>${esc(displayComandaId(comanda.id))}</b> | <span class="tag ${isClosed ? "status-comanda-fechada" : "status-comanda-aberta"}">${statusText}</span>${hasDeliveryRequested ? ` | <span class="tag">Entrega solicitada (${deliveryRequestedCount})</span>` : ""}${kitchenBadgeCompact ? ` | ${kitchenBadgeCompact}` : ""} | Mesa/ref: ${esc(comanda.table || "-")} | Garcom: ${esc(waiterName)} | Cliente: ${esc(comanda.customer || "-")} | Itens: ${validItems} | Total: ${money(comandaTotal(comanda))}
                 </summary>
                 <div class="note" style="margin-top:0.45rem;">Atualizada em: ${formatDateTime(comandaUpdatedAt(comanda))}</div>
                 ${hasDeliveryRequested ? `<div class="note" style="margin-top:0.35rem;">Comanda aberta com pedido para entrega.</div>` : ""}
@@ -4284,7 +4296,7 @@
                     <thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Detalhe</th></tr></thead>
                     <tbody>
                       ${events.length
-              ? events.map((e) => `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName || "-")}</td><td>${renderEventTypeTag(e.type || "-")}</td><td>${esc(e.detail || "-")}</td></tr>`).join("")
+              ? events.map((e) => `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName || "-")}</td><td>${renderEventTypeTag(e.type || "-")}</td><td>${esc(maskComandaCodesInText(e.detail || "-"))}</td></tr>`).join("")
               : `<tr><td colspan="4">Sem eventos registrados.</td></tr>`}
                     </tbody>
                   </table>
@@ -4414,7 +4426,7 @@
         ? `<div class="table-wrap" style="margin-top:0.55rem;"><table class="history-table responsive-stack"><thead><tr><th>Quando</th><th>Quem</th><th>Acao</th><th>Comanda</th><th>Resumo</th><th>Abrir</th></tr></thead><tbody>${displayedAudit
           .map(
             (e) =>
-              `<tr><td data-label="Quando">${formatDateTime(e.ts || e.broadcastAt)}</td><td data-label="Quem">${esc(e.actorName || "-")} (${esc(roleLabel(e.actorRole || "-"))})</td><td data-label="Acao">${esc(summarizeRealtimeAction(e))}</td><td data-label="Comanda">${esc(e.comandaId || "-")}</td><td data-label="Resumo">${esc(e.detail || "-")}</td><td data-label="Abrir">${e.comandaId ? `<button class="btn secondary compact-action" data-action="open-comanda-details" data-comanda-id="${e.comandaId}">Ver</button>` : "-"
+              `<tr><td data-label="Quando">${formatDateTime(e.ts || e.broadcastAt)}</td><td data-label="Quem">${esc(e.actorName || "-")} (${esc(roleLabel(e.actorRole || "-"))})</td><td data-label="Acao">${esc(maskComandaCodesInText(summarizeRealtimeAction(e)))}</td><td data-label="Comanda">${esc(displayComandaId(e.comandaId || "-"))}</td><td data-label="Resumo">${esc(maskComandaCodesInText(e.detail || "-"))}</td><td data-label="Abrir">${e.comandaId ? `<button class="btn secondary compact-action" data-action="open-comanda-details" data-comanda-id="${e.comandaId}">Ver</button>` : "-"
               }</td></tr>`
           )
           .join("")}</tbody></table></div>`
@@ -4463,7 +4475,7 @@
                       <tbody>${(h.commandas || [])
                 .map(
                   (c) =>
-                    `<tr><td>${esc(c.id)}</td><td>${esc(c.status)}</td><td>${money(comandaTotal(c))}</td><td>${esc(c.customer || "-")}</td><td><button class="btn secondary" data-action="open-comanda-details" data-comanda-id="${c.id}">Ver</button></td></tr>`
+                    `<tr><td>${esc(displayComandaId(c.id))}</td><td>${esc(c.status)}</td><td>${money(comandaTotal(c))}</td><td>${esc(c.customer || "-")}</td><td><button class="btn secondary" data-action="open-comanda-details" data-comanda-id="${c.id}">Ver</button></td></tr>`
                 )
                 .join("")}</tbody>
                     </table>
@@ -4482,7 +4494,7 @@
     const hasPendingOpen = pendingOpen.length > 0;
     const pendingPreview = pendingOpen
       .slice(0, 8)
-      .map((comanda) => `${comanda.id} (${comanda.table || "-"})`)
+      .map((comanda) => `${displayComandaId(comanda.id)} (${comanda.table || "-"})`)
       .join(" | ");
     return `
       <div class="grid">
@@ -4606,6 +4618,7 @@
               <div>
                 <h5>${esc(row.item.name || "-")} x${row.item.qty}</h5>
                 <div class="monitor-order-pills">
+                  <span class="monitor-order-pill">Comanda ${esc(displayComandaId(row.comanda.id))}</span>
                   <span class="monitor-order-pill">Mesa/ref ${esc(row.comanda.table || "-")}</span>
                   <span class="monitor-order-pill">Responsavel ${esc(responsible)}</span>
                   <span class="monitor-order-pill priority ${priorityClass}">${esc(priorityLabel)}</span>
@@ -4639,7 +4652,7 @@
       .map((row) => {
         const comanda = findComandaForDetails(String(row?.comandaId || ""));
         const responsible = comanda ? resolveComandaResponsibleName(comanda) : "-";
-        return `<tr><td>${formatDateTime(row.deliveredAt || row.updatedAt)}</td><td>${esc(row.comandaId || "-")}</td><td>${esc(row.table || "-")}</td><td>${esc(responsible)}</td><td>${esc(row.itemName || "-")}</td><td>${row.qty}</td><td>${esc(kitchenStatusLabel(row.status || "fila"))}</td><td>${esc(row.cookName || "-")}</td></tr>`;
+        return `<tr><td>${formatDateTime(row.deliveredAt || row.updatedAt)}</td><td>${esc(displayComandaId(row.comandaId || "-"))}</td><td>${esc(row.table || "-")}</td><td>${esc(responsible)}</td><td>${esc(row.itemName || "-")}</td><td>${row.qty}</td><td>${esc(kitchenStatusLabel(row.status || "fila"))}</td><td>${esc(row.cookName || "-")}</td></tr>`;
       })
       .join("");
 
@@ -4807,7 +4820,7 @@
           .slice(0, 120)
           .map(
             (event) =>
-              `<tr><td>${formatDateTime(event.ts || event.broadcastAt)}</td><td>${esc(event.actorName || "-")}</td><td>${renderEventTypeTag(event.type || "-")}</td><td>${esc(event.comandaId || "-")}</td><td>${esc(event.detail || "-")}</td></tr>`
+              `<tr><td>${formatDateTime(event.ts || event.broadcastAt)}</td><td>${esc(event.actorName || "-")}</td><td>${renderEventTypeTag(event.type || "-")}</td><td>${esc(displayComandaId(event.comandaId || "-"))}</td><td>${esc(maskComandaCodesInText(event.detail || "-"))}</td></tr>`
           )
           .join("")}</tbody></table></div>`
         : `<div class="empty" style="margin-top:0.75rem;">Sem eventos remotos recebidos ainda.</div>`}
@@ -4925,7 +4938,7 @@
         </div>
         ${activeComanda
         ? `<div class="card">
-          <h3>Comanda ativa agora: ${esc(activeComanda.id)}</h3>
+          <h3>Comanda ativa agora: ${esc(displayComandaId(activeComanda.id))}</h3>
           <p class="note">Adicione pedidos, acompanhe a cozinha e finalize quando necessario.</p>
           <div class="actions" style="margin-top:0.55rem;">
             <button class="btn secondary compact-action" data-action="minimize-open-comanda" data-comanda-id="${activeComanda.id}">Minimizar pedido aberto</button>
@@ -5050,7 +5063,7 @@
     const methodOptions = PAYMENT_METHODS.map((m) => `<option value="${m.value}">${m.label}</option>`).join("");
     return `
       <form class="card form" data-role="finalize-form" data-comanda-id="${comanda.id}">
-        <h4>Finalizacao da comanda</h4>
+        <h4>Finalizacao da comanda ${esc(displayComandaId(comanda.id))}</h4>
         <div class="note">Confira dados e escolha uma ou mais formas de pagamento. A soma deve bater com o total da comanda.</div>
         <div class="grid cols-2">
           <div class="field">
@@ -5313,7 +5326,7 @@
             ${rows
         .map(
           (row) =>
-            `<div class="waiter-ready-item status-${esc(row.status || "fila")}"><div><b>${esc(row.itemName)}</b> x${row.qty} | Referencia ${esc(row.table || "-")}</div><div class="kitchen-alert-meta"><span class="tag">Status: ${esc(row.statusLabel || kitchenStatusLabel("fila"))}</span><span class="note">Atualizado em: ${formatDateTime(row.updatedAt)}</span></div>${row.waiterNote ? `<div class="note">Obs do pedido: ${esc(row.waiterNote)}</div>` : ""}${row.deliveryRequested ? `<div class="note">Entrega: ${esc(row.deliveryRecipient || "-")} | ${esc(row.deliveryLocation || "-")}</div>` : ""}</div>`
+            `<div class="waiter-ready-item status-${esc(row.status || "fila")}"><div><b>${esc(row.itemName)}</b> x${row.qty} | Comanda <b>${esc(displayComandaId(row.comandaId))}</b> | Referencia ${esc(row.table || "-")}</div><div class="kitchen-alert-meta"><span class="tag">Status: ${esc(row.statusLabel || kitchenStatusLabel("fila"))}</span><span class="note">Atualizado em: ${formatDateTime(row.updatedAt)}</span></div>${row.waiterNote ? `<div class="note">Obs do pedido: ${esc(row.waiterNote)}</div>` : ""}${row.deliveryRequested ? `<div class="note">Entrega: ${esc(row.deliveryRecipient || "-")} | ${esc(row.deliveryLocation || "-")}</div>` : ""}</div>`
         )
         .join("")}
           </div>
@@ -5336,10 +5349,10 @@
           <h3>Fila de Espera - Cozinha</h3>
           <p class="note">Tempo medio atual: <b>${avg} min</b></p>
           ${queue.length
-        ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="responsive-stack waiter-kitchen-table"><thead><tr><th>Cliente</th><th>Produto</th><th>Qtd</th><th>Obs cozinha</th><th>Prioridade</th><th>Status Cozinha</th><th>Tempo restante</th><th>Mesa/ref</th></tr></thead><tbody>${queue
+        ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="responsive-stack waiter-kitchen-table"><thead><tr><th>Comanda</th><th>Produto</th><th>Qtd</th><th>Obs cozinha</th><th>Prioridade</th><th>Status Cozinha</th><th>Tempo restante</th><th>Mesa/ref</th></tr></thead><tbody>${queue
           .map(
             (r) =>
-              `<tr><td data-label="Cliente">${esc(r.comanda.customer || "-")}</td><td data-label="Produto">${esc(r.item.name)}</td><td data-label="Qtd">${r.item.qty}</td><td data-label="Obs cozinha">${esc(r.item.waiterNote || "-")}</td><td data-label="Prioridade"><span class="tag">${esc(kitchenPriorityLabel(r.item.kitchenPriority || "normal"))}</span></td><td data-label="Status Cozinha"><span class="tag">${esc(kitchenStatusLabel(r.item.kitchenStatus || "fila"))}</span></td><td data-label="Tempo restante">${Math.ceil(r.remainingMs / 60000)} min</td><td data-label="Mesa/ref">${esc(r.comanda.table)}</td></tr>`
+              `<tr><td data-label="Comanda">${esc(displayComandaId(r.comanda.id))}</td><td data-label="Produto">${esc(r.item.name)}</td><td data-label="Qtd">${r.item.qty}</td><td data-label="Obs cozinha">${esc(r.item.waiterNote || "-")}</td><td data-label="Prioridade"><span class="tag">${esc(kitchenPriorityLabel(r.item.kitchenPriority || "normal"))}</span></td><td data-label="Status Cozinha"><span class="tag">${esc(kitchenStatusLabel(r.item.kitchenStatus || "fila"))}</span></td><td data-label="Tempo restante">${Math.ceil(r.remainingMs / 60000)} min</td><td data-label="Mesa/ref">${esc(r.comanda.table)}</td></tr>`
           )
           .join("")}</tbody></table></div>`
         : `<div class="empty" style="margin-top:0.75rem;">Sem pedidos pendentes da cozinha.</div>`}
@@ -5435,7 +5448,7 @@
             ${todayAudit.length
         ? `<div class="table-wrap" style="margin-top:0.55rem;"><table class="history-table"><thead><tr><th>Data</th><th>Ator</th><th>Tipo</th><th>Comanda</th><th>Detalhe</th></tr></thead><tbody>${todayAudit
           .map(
-            (e) => `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName)}</td><td>${renderEventTypeTag(e.type)}</td><td>${esc(e.comandaId || "-")}</td><td>${esc(e.detail)}</td></tr>`
+            (e) => `<tr><td>${formatDateTime(e.ts)}</td><td>${esc(e.actorName)}</td><td>${renderEventTypeTag(e.type)}</td><td>${esc(displayComandaId(e.comandaId || "-"))}</td><td>${esc(maskComandaCodesInText(e.detail))}</td></tr>`
           )
           .join("")}</tbody></table></div>`
         : `<div class="empty" style="margin-top:0.55rem;">Sem eventos ainda.</div>`}
@@ -5547,6 +5560,7 @@
                   <div>
                     <h4>${esc(row.item.name)} x${row.item.qty}</h4>
                     <div class="kitchen-order-pills">
+                      <span class="kitchen-order-pill">Comanda ${esc(displayComandaId(row.comanda.id))}</span>
                       <span class="kitchen-order-pill">Mesa/ref ${esc(row.comanda.table || "-")}</span>
                       <span class="kitchen-order-pill">Fila ${esc(queueInfo)}</span>
                       <span class="kitchen-order-pill priority ${priorityClass}">${esc(priorityLabel)}</span>
@@ -5636,7 +5650,7 @@
         ? `<div class="table-wrap" style="margin-top:0.55rem;"><table><thead><tr><th>Data</th><th>Comanda</th><th>Mesa/ref</th><th>Produto</th><th>Qtd</th><th>Obs cozinha</th><th>Prioridade</th><th>Status final</th><th>Entrega</th><th>Cozinheiro</th></tr></thead><tbody>${rows
           .map(
             (row) =>
-              `<tr><td>${formatDateTime(row.deliveredAt || row.updatedAt)}</td><td>${esc(row.comandaId)}</td><td>${esc(row.table || "-")}</td><td>${esc(row.itemName)}</td><td>${row.qty}</td><td>${esc(row.waiterNote || "-")}</td><td>${esc(kitchenPriorityLabel(row.priority || "normal"))}</td><td>${esc(kitchenStatusLabel(row.status || "entregue"))}</td><td>${row.deliveryRequested ? `<div><b>${esc(row.deliveryRecipient || "-")}</b></div><div class="note">${esc(row.deliveryLocation || "-")}</div>` : "Balcao/Mesa"}</td><td>${esc(row.cookName || "-")}</td></tr>`
+              `<tr><td>${formatDateTime(row.deliveredAt || row.updatedAt)}</td><td>${esc(displayComandaId(row.comandaId))}</td><td>${esc(row.table || "-")}</td><td>${esc(row.itemName)}</td><td>${row.qty}</td><td>${esc(row.waiterNote || "-")}</td><td>${esc(kitchenPriorityLabel(row.priority || "normal"))}</td><td>${esc(kitchenStatusLabel(row.status || "entregue"))}</td><td>${row.deliveryRequested ? `<div><b>${esc(row.deliveryRecipient || "-")}</b></div><div class="note">${esc(row.deliveryLocation || "-")}</div>` : "Balcao/Mesa"}</td><td>${esc(row.cookName || "-")}</td></tr>`
           )
           .join("")}</tbody></table></div>`
         : `<div class="empty" style="margin-top:0.55rem;">Sem registros da cozinha neste caixa.</div>`}
@@ -5657,7 +5671,7 @@
           <span class="status-dot ok"></span>
           <div>
             <p><b>Cozinha recebeu o pedido</b></p>
-            <p class="note">${esc(latest.itemName)} x${latest.qty} | Ref. ${esc(latest.table || "-")} | ${formatDateTime(latest.receivedAt)}${latest.cookName ? ` | ${esc(latest.cookName)}` : ""}${extra ? ` | +${extra} novo(s)` : ""}</p>
+            <p class="note">${esc(latest.itemName)} x${latest.qty} | Comanda ${esc(displayComandaId(latest.comandaId))} | Ref. ${esc(latest.table || "-")} | ${formatDateTime(latest.receivedAt)}${latest.cookName ? ` | ${esc(latest.cookName)}` : ""}${extra ? ` | +${extra} novo(s)` : ""}</p>
           </div>
         </div>
         <div class="actions waiter-kitchen-receipt-actions">
@@ -6418,7 +6432,7 @@
       <div class="item-selector-modal-backdrop">
         <div class="card item-selector-modal">
           <h3>${mode === "increment" ? "Adicionar quantidade no item" : "Devolver/cancelar quantidade"}</h3>
-          <p class="note" style="margin-top:0.3rem;">Referencia: ${esc(comanda.table || "-")}.</p>
+          <p class="note" style="margin-top:0.3rem;">Comanda ${esc(displayComandaId(comanda.id))} | Referencia: ${esc(comanda.table || "-")}.</p>
           <form class="form" data-role="item-selector-form" data-comanda-id="${comanda.id}" data-mode="${mode}" style="margin-top:0.7rem;">
             <div class="field">
               <label>Item</label>
@@ -6479,7 +6493,7 @@
 
     const impact = computeComandaDeletionImpact(comanda);
     const confirmText =
-      `Excluir completamente a comanda ${comanda.id}?\n` +
+      `Excluir completamente a comanda ${displayComandaId(comanda.id)}?\n` +
       `Mesa/ref: ${comanda.table || "-"}\n` +
       `Cliente: ${comanda.customer || "-"}\n` +
       `Itens ativos: ${impact.activeItems}\n` +
@@ -6510,7 +6524,7 @@
     return `
       <div class="delete-comanda-modal-backdrop">
         <div class="card delete-comanda-modal">
-          <h3>Confirmar exclusao da comanda ${esc(comanda.id)}</h3>
+          <h3>Confirmar exclusao da comanda ${esc(displayComandaId(comanda.id))}</h3>
           <p class="note" style="margin-top:0.35rem;">Informe os dados da conta conectada para concluir. Esta acao remove a comanda e repoe o estoque.</p>
           <div class="delete-comanda-summary">
             <div class="kpi"><p>Mesa/Ref.</p><b>${esc(comanda.table || "-")}</b></div>
@@ -6999,7 +7013,7 @@
 
     const increaseMode = mode !== "decrease";
     const amountLabel = increaseMode ? "acrescentar" : "descontar";
-    const amountRaw = prompt(`Valor para ${amountLabel} no fiado da comanda ${payable.comandaId}:`, "0");
+    const amountRaw = prompt(`Valor para ${amountLabel} no fiado da comanda ${displayComandaId(payable.comandaId)}:`, "0");
     if (amountRaw === null) return;
     const amount = parseNumber(amountRaw);
     if (!(amount > 0)) {
@@ -7032,7 +7046,7 @@
       actor,
       type: "fiado_ajuste_manual",
       detail:
-        `Fiado da comanda ${payable.comandaId} ajustado manualmente (${increaseMode ? "+" : "-"}${money(amount)}). ` +
+        `Fiado da comanda ${displayComandaId(payable.comandaId)} ajustado manualmente (${increaseMode ? "+" : "-"}${money(amount)}). ` +
         `Saldo: ${money(result.currentTotal)} -> ${money(result.nextTotal)}. Motivo: ${reason}.`,
       comandaId: payable.comandaId
     });
@@ -7062,7 +7076,7 @@
       return;
     }
 
-    const amountRaw = prompt(`Valor para reduzir do fiado da comanda ${comanda.id}:`, Number(currentTotal).toFixed(2));
+    const amountRaw = prompt(`Valor para reduzir do fiado da comanda ${displayComandaId(comanda.id)}:`, Number(currentTotal).toFixed(2));
     if (amountRaw === null) return;
     const amount = parseNumber(amountRaw);
     if (!(amount > 0) || amount > currentTotal) {
@@ -7082,7 +7096,7 @@
       return;
     }
 
-    if (!confirm(`Confirmar reducao de ${money(amount)} no fiado da comanda ${comanda.id} usando ${paymentLabel(method)}?`)) {
+    if (!confirm(`Confirmar reducao de ${money(amount)} no fiado da comanda ${displayComandaId(comanda.id)} usando ${paymentLabel(method)}?`)) {
       return;
     }
 
@@ -7125,7 +7139,7 @@
       actor,
       type: "fiado_reducao_pagamento",
       detail:
-        `Fiado da comanda ${comanda.id} reduzido em ${money(amount)} com ${paymentLabel(method)}. ` +
+        `Fiado da comanda ${displayComandaId(comanda.id)} reduzido em ${money(amount)} com ${paymentLabel(method)}. ` +
         `Saldo: ${money(result.currentTotal)} -> ${money(result.nextTotal)}.`,
       comandaId: comanda.id
     });
@@ -7157,7 +7171,7 @@
       qty = providedQty;
     } else {
       const productPrompt = prompt(
-        `Produto (ID ou nome) para ${mode === "remove" ? "remover" : "adicionar"} no fiado da comanda ${payable.comandaId}:`,
+        `Produto (ID ou nome) para ${mode === "remove" ? "remover" : "adicionar"} no fiado da comanda ${displayComandaId(payable.comandaId)}:`,
         ""
       );
       if (productPrompt === null) return;
@@ -7230,7 +7244,7 @@
       actor,
       type: mode === "remove" ? "fiado_ajuste_produto_remove" : "fiado_ajuste_produto_add",
       detail:
-        `Fiado da comanda ${payable.comandaId} ${mode === "remove" ? "teve remocao" : "recebeu adicao"} ` +
+        `Fiado da comanda ${displayComandaId(payable.comandaId)} ${mode === "remove" ? "teve remocao" : "recebeu adicao"} ` +
         `de ${product.name} x${qty} (${money(unitPrice)} un). Saldo: ${money(result.currentTotal)} -> ${money(result.nextTotal)}. ` +
         `Estoque ${mode === "remove" ? "devolvido" : "baixado"}: ${qty}.`,
       comandaId: payable.comandaId
@@ -7256,7 +7270,7 @@
     payable.paidAt = isoNow();
     payable.updatedAt = payable.paidAt;
     payable.paidMethod = method;
-    appendAudit({ actor, type: "fiado_pago", detail: `Fiado da comanda ${payable.comandaId} marcado como pago.` });
+    appendAudit({ actor, type: "fiado_pago", detail: `Fiado da comanda ${displayComandaId(payable.comandaId)} marcado como pago.` });
     saveState();
     render();
   }
@@ -8833,7 +8847,7 @@
     const html = `
       <html>
         <head>
-          <title>Cozinha ${esc(comanda.id)}</title>
+          <title>Cozinha ${esc(displayComandaId(comanda.id))}</title>
           <style>
             body { font-family: monospace; margin: 0; padding: 10px; }
             .ticket { width: 80mm; margin: 0 auto; color: #000; }
@@ -8850,7 +8864,7 @@
           <div class="ticket">
             <h2>${esc(ESTABLISHMENT_NAME)} | COZINHA</h2>
             <p class="strong">Pedido: ${esc(reason)}</p>
-            <p class="meta">Comanda: ${esc(comanda.id)} | Mesa/ref: ${esc(comanda.table || "-")}</p>
+            <p class="meta">Comanda: ${esc(displayComandaId(comanda.id))} | Mesa/ref: ${esc(comanda.table || "-")}</p>
             <p class="meta">Cliente: ${esc(comanda.customer || "-")}</p>
             <p class="meta">Solicitante: ${esc(actor.name || "-")} (${esc(roleLabel(actor.role || ""))})</p>
             <p class="meta">Gerado em: ${esc(formatDateTime(generatedAt))}</p>
@@ -8864,7 +8878,7 @@
     `;
 
     openReceiptPopup(html, "Permita pop-up para abrir a visualizacao do cupom da cozinha.", "width=420,height=760", {
-      previewTitle: `Cupom da cozinha ${comanda.id}`,
+      previewTitle: `Cupom da cozinha ${displayComandaId(comanda.id)}`,
       previewSubtitle: "Modo visualizacao simples (impressao desativada)"
     });
   }
@@ -8880,7 +8894,7 @@
     const html = `
       <html>
         <head>
-          <title>Cupom ${esc(comanda.id)}</title>
+          <title>Cupom ${esc(displayComandaId(comanda.id))}</title>
           <style>
             body { font-family: monospace; margin: 0; padding: 12px; }
             .receipt { width: 80mm; margin: 0 auto; }
@@ -8893,7 +8907,7 @@
         <body>
           <div class="receipt">
             <p class="center"><b>${esc(ESTABLISHMENT_NAME)}</b></p>
-            <h3>Comanda ${esc(comanda.id)}</h3>
+            <h3>Comanda ${esc(displayComandaId(comanda.id))}</h3>
             <p>Mesa: ${esc(comanda.table)}</p>
             <p>Cliente: ${esc(comanda.customer || "-")}</p>
             <p>Aberta: ${esc(formatDateTime(comanda.createdAt))}</p>
@@ -8911,7 +8925,7 @@
     `;
 
     openReceiptPopup(html, "Permita pop-up para abrir a visualizacao do cupom.", "width=420,height=760", {
-      previewTitle: `Cupom da comanda ${comanda.id}`,
+      previewTitle: `Cupom da comanda ${displayComandaId(comanda.id)}`,
       previewSubtitle: "Modo visualizacao simples (impressao desativada)"
     });
   }

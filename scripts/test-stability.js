@@ -109,6 +109,18 @@ function todayISO() {
     return new Date().toISOString().slice(0, 10);
 }
 
+function displayComandaId(comandaId) {
+    const raw = String(comandaId || "").trim();
+    if (!raw) return "-";
+    const match = /^(CMD-\d+)/i.exec(raw);
+    if (!match) return raw;
+    return match[1].toUpperCase();
+}
+
+function maskComandaCodesInText(value) {
+    return String(value ?? "").replace(/\b(CMD-\d+)-[A-Z0-9]+\b/gi, (_full, base) => String(base || "").toUpperCase());
+}
+
 function normalizeOperationalResetAt(value) {
     if (typeof value !== "string") return "";
     const trimmed = value.trim();
@@ -422,6 +434,18 @@ section("isoNow / todayISO");
     const today = todayISO();
     assert(/^\d{4}-\d{2}-\d{2}$/.test(today), "todayISO formato YYYY-MM-DD");
     assert(iso.startsWith(today), "isoNow comeca com todayISO");
+}
+
+section("displayComandaId / maskComandaCodesInText");
+{
+    assertEqual(displayComandaId("CMD-0007-AB12CD"), "CMD-0007", "mantem apenas o numero base da comanda");
+    assertEqual(displayComandaId("Avulso"), "Avulso", "nao altera IDs fora do padrao CMD");
+    assertEqual(displayComandaId(""), "-", "vazio vira placeholder");
+    assertEqual(
+        maskComandaCodesInText("Comanda CMD-0042-XYZ1 pronta para entrega."),
+        "Comanda CMD-0042 pronta para entrega.",
+        "remove o sufixo tecnico em texto livre"
+    );
 }
 
 section("normalizeOperationalResetAt");
