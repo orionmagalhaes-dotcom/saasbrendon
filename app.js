@@ -621,7 +621,9 @@
       meta[CATALOG_BACKUPS_META_KEY],
       ...backupSources.map((source) => source?.meta?.[CATALOG_BACKUPS_META_KEY])
     );
-    const recoveryEnabled = meta.enableCatalogRecovery === true;
+    const catalogRows = (Array.isArray(targetState.users) ? targetState.users.length : 0) + (Array.isArray(targetState.products) ? targetState.products.length : 0);
+    const catalogLooksWiped = catalogRows <= 1;
+    const recoveryEnabled = meta.enableCatalogRecovery === true || catalogLooksWiped;
     if (!backups.length || !recoveryEnabled) {
       return {
         ...targetState,
