@@ -61,6 +61,8 @@
   const DEV_SESSION_ID = "__dev__";
   const DEVICE_PRESENCE_TTL_MS = 45 * 1000;
   const DEVICE_PRESENCE_PING_MS = 10 * 1000;
+  const CASH_CUTOFF_HOUR = 7;
+  const CASH_OPEN_HOUR = 8;
   const ROLE_ACCESS_CODE_BY_ROLE = Object.freeze({
     admin: "1111",
     waiter: "2222",
@@ -147,6 +149,18 @@
 
   function todayISO() {
     return new Date().toISOString().slice(0, 10);
+  }
+
+  function buildLocalHourIso(hour, minute = 0, baseNow = isoNow()) {
+    const now = new Date(baseNow);
+    if (!Number.isFinite(now.getTime())) return "";
+    const baseline = new Date(now.getFullYear(), now.getMonth(), now.getDate(), Number(hour), Number(minute), 0, 0);
+    if (!Number.isFinite(baseline.getTime())) return "";
+    const target = baseline;
+    if (target.getTime() > now.getTime()) {
+      target.setDate(target.getDate() - 1);
+    }
+    return target.toISOString();
   }
 
   function parseUpdatedAtTimestamp(value) {
@@ -1937,7 +1951,9 @@
   function saveState(options = {}) {
     const touchMeta = options.touchMeta !== false;
     state.meta = state.meta || {};
-    synchronizeCashOpenedAt(state);
+    if (!options.skipCashOpenedAtSync) {
+      synchronizeCashOpenedAt(state);
+    }
     rollFinance30DayCycles(state, { nowIso: isoNow() });
     ensureCatalogBackup(state, "save");
     if (touchMeta) {
@@ -3791,10 +3807,11 @@
     return "Venda direta";
   }
 
-  function buildCashClosureDraft(closedAt = isoNow()) {
-    const openedAt = state.cash?.openedAt || "";
+  function buildCashClosureDraft(closedAt = isoNow(), options = {}) {
+    const openedAt = options.openedAt == null ? state.cash?.openedAt || "" : options.openedAt;
+    const windowEnd = options.windowEndAt || closedAt;
     const commandas = dedupeComandasById(state.closedComandas).filter((comanda) =>
-      comandaBelongsToCashWindow(comanda, openedAt, closedAt)
+      comandaBelongsToCashWindow(comanda, openedAt, windowEnd)
     );
     return {
       commandas,
@@ -4504,16 +4521,17 @@
       .slice(0, 8)
       .map((comanda) => `${displayComandaId(comanda.id)} (${comanda.table || "-"})`)
       .join(" | ");
+    const pendingOpenHint = hasPendingOpen
+      ? `<div class="note" style="margin-top:0.35rem;color:#8b2f3b;"><b>Atencao:</b> existem ${pendingOpen.length} comanda(s) aberta(s). Fechamento normal esta bloqueado; ative <i>Fechamento de evento</i> para manter estas comandas no novo caixa.</div>`
+      : `<div class="note" style="margin-top:0.35rem;color:#1e5f3a;">Sem comandas abertas agora. O fechamento normal segue permitido.</div>`;
     return `
       <div class="grid">
         <div class="card">
           <h3>Fechar Caixa</h3>
           <p class="note">Solicita segunda autenticacao para evitar fechamento por engano.</p>
           <p class="note" style="margin-top:0.35rem;">${esc(openInfo)}</p>
-          ${hasPendingOpen
-        ? `<div class="note" style="margin-top:0.45rem;color:#8b2f3b;"><b>Bloqueado:</b> existe(m) ${pendingOpen.length} comanda(s) aberta(s). Feche todas antes de encerrar o caixa.${pendingPreview ? ` Ex.: ${esc(pendingPreview)}${pendingOpen.length > 8 ? " ..." : ""}` : ""}</div>`
-        : `<div class="note" style="margin-top:0.45rem;color:#1e5f3a;">Todas as comandas estao fechadas. Caixa liberado para encerramento.</div>`
-      }
+          <p class="note" style="margin-top:0.45rem;color:#1e5f3a;">Fechamento normal (padrao): exige caixa sem comandas abertas. Se o evento exigir preservar pedido em andamento, ative a opcao abaixo.</p>
+          ${pendingOpenHint}
           <form id="close-cash-form" class="form" style="margin-top:0.75rem;" autocomplete="off">
             <div class="field">
               <label>Login admin (2a confirmacao)</label>
@@ -4523,7 +4541,11 @@
               <label>Senha admin</label>
               <input name="password" type="password" required placeholder="senha do admin" />
             </div>
-            <button type="submit" class="btn danger" ${hasPendingOpen ? "disabled title=\"Feche todas as comandas abertas para continuar.\"" : ""}>Fechar Caixa Agora</button>
+            <div class="field" style="display:flex; align-items:center; gap:0.6rem; margin-bottom:1rem;">
+              <input name="specialCashCutoff" id="specialCashCutoff" type="checkbox" style="width:auto; margin:0;" />
+              <label for="specialCashCutoff">Fechamento de evento (concluido até ${formatDateTimeWithDay(buildLocalHourIso(CASH_CUTOFF_HOUR, 0, isoNow()))}, preservando comandas ativas no novo caixa)</label>
+            </div>
+            <button type="submit" class="btn danger">Fechar Caixa Agora</button>
           </form>
           <div class="actions" style="margin-top:0.75rem;">
             <button type="button" class="btn secondary" data-action="print-cash-day-history">Ver historico do dia</button>
@@ -8981,7 +9003,9 @@
     synchronizeCashOpenedAt(state);
 
     const pendingOpen = [...state.openComandas].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
-    if (pendingOpen.length) {
+    const isSpecialCutoff = form.specialCashCutoff?.checked === true;
+
+    if (!isSpecialCutoff && pendingOpen.length) {
       const preview = pendingOpen
         .slice(0, 8)
         .map((comanda) => `${comanda.id} (${comanda.table || "-"})`)
@@ -8995,39 +9019,130 @@
       return;
     }
 
+    const addClosureReport = (closure) => {
+      const reportOptions = {
+        printedBy: actor,
+        title: `Fechamento do caixa ${closure.cashId} | Dia ${formatDateOnlySafe(String(closure.openedAt || closure.closedAt).slice(0, 10))}`,
+        subtitle: "Historico do dia apos fechamento"
+      };
+      const closureHtml = buildCashHistoryPrintHtml(closure, reportOptions);
+      const archivedHtmlReport = createCashHtmlReportRecord(closure, actor, closureHtml, reportOptions);
+      state.history90.unshift(closure);
+      pruneHistory(state);
+      state.cashHtmlReports = [archivedHtmlReport, ...(state.cashHtmlReports || [])];
+      pruneCashHtmlReports(state);
+      return archivedHtmlReport;
+    };
+
+    if (isSpecialCutoff) {
+      const configuredClosedAt = buildLocalHourIso(CASH_CUTOFF_HOUR, 0, isoNow()) || isoNow();
+      const configuredClosedAtTs = parseUpdatedAtTimestamp(configuredClosedAt);
+      const openedAtForWindowTs = parseUpdatedAtTimestamp(state.cash?.openedAt);
+      const closedAt = openedAtForWindowTs && configuredClosedAtTs && openedAtForWindowTs > configuredClosedAtTs ? state.cash.openedAt : configuredClosedAt;
+      const nextCashOpenedAt = buildLocalHourIso(CASH_OPEN_HOUR, 0, isoNow()) || isoNow();
+      const windowStart = state.cash?.openedAt || "";
+
+      const closureDraft = buildCashClosureDraft(closedAt, {
+        openedAt: windowStart,
+        windowEndAt: closedAt
+      });
+      const archivedClosedComandaIds = new Set(
+        closureDraft.commandas
+          .map((comanda) => String(comanda?.id || "").trim())
+          .filter(Boolean)
+      );
+      const preservedClosedComandas = dedupeComandasById(state.closedComandas).filter((comanda) => {
+        const id = String(comanda?.id || "").trim();
+        return id ? !archivedClosedComandaIds.has(id) : true;
+      });
+      const periodOpenedAt = earliestComandaCreatedAtIso(closureDraft.commandas) || windowStart || "";
+      const periodStartTs = parseUpdatedAtTimestamp(windowStart);
+      const closureCutoffTs = parseUpdatedAtTimestamp(closedAt);
+      const closureAuditWindowLog = (state.auditLog || []).filter((event) => {
+        const eventTs = parseUpdatedAtTimestamp(event?.ts);
+        if (!eventTs) return false;
+        if (periodStartTs && eventTs < periodStartTs) return false;
+        if (closureCutoffTs && eventTs > closureCutoffTs) return false;
+        return true;
+      });
+
+      const confirmText =
+        `Confirmar fechamento de evento do caixa ${state.cash.id}?\n` +
+        `Periodo do evento: ${formatCashOpenedAtLabel(windowStart || periodOpenedAt)} ate ${formatDateTimeWithDay(closedAt)}\n` +
+        `Comandas fechadas dentro deste periodo serao arquivadas.\n` +
+        `${pendingOpen.length ? `Comandas abertas serao preservadas: ${pendingOpen.length}.\n` : ""}` +
+        `${nextCashOpenedAt ? `Novo caixa iniciado em ${formatDateTimeWithDay(nextCashOpenedAt)}.\n` : ""}` +
+        "Confirma?";
+      if (!confirm(confirmText)) {
+        return;
+      }
+
+      const closure = {
+        id: `HIST-${Date.now()}`,
+        cashId: state.cash.id,
+        openedAt: periodOpenedAt,
+        closedAt,
+        commandas: closureDraft.commandas,
+        auditLog: [
+          {
+            id: `EV-${state.seq.event++}`,
+            ts: closedAt,
+            actorId: actor.id,
+            actorRole: actor.role,
+            actorName: actor.name,
+            type: "caixa_fechado",
+            detail: `Caixa ${state.cash.id} fechado com segunda autenticacao. Aberto em ${formatCashOpenedAtLabel(periodOpenedAt)} e fechado em ${formatDateTimeWithDay(closedAt)}.`,
+            comandaId: null,
+            itemId: null,
+            reason: ""
+          },
+          ...closureAuditWindowLog
+        ],
+        summary: closureDraft.summary
+      };
+
+      const archivedHtmlReport = addClosureReport(closure);
+      state.closedComandas = preservedClosedComandas;
+      state.auditLog = (state.auditLog || []).filter((event) => {
+        const eventTs = parseUpdatedAtTimestamp(event?.ts);
+        return eventTs && eventTs > (closureCutoffTs || 0);
+      });
+      state.meta = state.meta || {};
+      state.meta.realtimeAuditResetAt = nextCashOpenedAt || closedAt;
+      state.cash = {
+        id: `CX-${state.seq.cash++}`,
+        openedAt: nextCashOpenedAt || "",
+        date: todayISO()
+      };
+      uiState.remoteMonitorEvents = [];
+
+      saveState({ skipCashOpenedAtSync: true });
+      openCashHtmlReportRecord(archivedHtmlReport, {
+        previewTitle: `Fechamento do caixa ${closure.cashId} | Dia ${formatDateOnlySafe(String(closure.openedAt || closedAt).slice(0, 10))}`,
+        previewSubtitle: `Historico do dia apos fechamento | Arquivo ${archivedHtmlReport.id}`
+      });
+      alert(`Fechamento de evento executado.\nAbertura do evento: ${formatCashOpenedAtLabel(periodOpenedAt)}\nFechamento: ${formatDateTimeWithDay(closedAt)}\nNovo caixa iniciado: ${formatDateTimeWithDay(state.cash.openedAt)}`);
+      render();
+      return;
+    }
+
     const closedAt = isoNow();
     const closureDraft = buildCashClosureDraft(closedAt);
     const openedAt = earliestComandaCreatedAtIso(closureDraft.commandas) || state.cash.openedAt || "";
-    const confirmText =
-      `Confirmar fechamento do caixa ${state.cash.id}?\n` +
+    const confirmText = `Confirmar fechamento do caixa ${state.cash.id}?\n` +
       `Aberto em: ${formatCashOpenedAtLabel(openedAt)}\n` +
       `Fechamento em: ${formatDateTimeWithDay(closedAt)}\n\n` +
       "Comandas do dia serao movidas para historico e dados operacionais limpos.";
     if (!confirm(confirmText)) {
       return;
     }
-    const allDayComandas = closureDraft.commandas;
     const closure = {
       id: `HIST-${Date.now()}`,
       cashId: state.cash.id,
       openedAt,
       closedAt,
-      commandas: allDayComandas,
-      auditLog: [
-        {
-          id: `EV-${state.seq.event++}`,
-          ts: closedAt,
-          actorId: actor.id,
-          actorRole: actor.role,
-          actorName: actor.name,
-          type: "caixa_fechado",
-          detail: `Caixa ${state.cash.id} fechado com segunda autenticacao. Aberto em ${formatCashOpenedAtLabel(openedAt)} e fechado em ${formatDateTimeWithDay(closedAt)}.`,
-          comandaId: null,
-          itemId: null,
-          reason: ""
-        },
-        ...state.auditLog
-      ],
+      commandas: closureDraft.commandas,
+      auditLog: [{ id: `EV-${state.seq.event++}`, ts: closedAt, actorId: actor.id, actorRole: actor.role, actorName: actor.name, type: "caixa_fechado", detail: `Caixa ${state.cash.id} fechado com segunda autenticacao. Aberto em ${formatCashOpenedAtLabel(openedAt)} e fechado em ${formatDateTimeWithDay(closedAt)}.`, comandaId: null, itemId: null, reason: ""}, ...state.auditLog],
       summary: closureDraft.summary
     };
     const reportOptions = {
@@ -9035,14 +9150,7 @@
       title: `Fechamento do caixa ${closure.cashId} | Dia ${formatDateOnlySafe(String(closure.openedAt || closedAt).slice(0, 10))}`,
       subtitle: "Historico do dia apos fechamento"
     };
-    const closureHtml = buildCashHistoryPrintHtml(closure, reportOptions);
-    const archivedHtmlReport = createCashHtmlReportRecord(closure, actor, closureHtml, reportOptions);
-
-    state.history90.unshift(closure);
-    pruneHistory(state);
-    state.cashHtmlReports = [archivedHtmlReport, ...(state.cashHtmlReports || [])];
-    pruneCashHtmlReports(state);
-
+    const archivedHtmlReport = addClosureReport(closure);
     state.openComandas = [];
     state.closedComandas = [];
     state.cookHistory = [];
@@ -9050,11 +9158,7 @@
     uiState.remoteMonitorEvents = [];
     state.meta = state.meta || {};
     state.meta.realtimeAuditResetAt = closedAt;
-    state.cash = {
-      id: `CX-${state.seq.cash++}`,
-      openedAt: "",
-      date: todayISO()
-    };
+    state.cash = { id: `CX-${state.seq.cash++}`, openedAt: "", date: todayISO() };
 
     saveState();
     openCashHtmlReportRecord(archivedHtmlReport, {
