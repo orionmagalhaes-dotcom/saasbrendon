@@ -4253,10 +4253,15 @@
   function renderAdminHistory() {
     const currentAudit = state.auditLog.slice(0, 5000);
     const currentCashOpenedAtMs = new Date(state.cash?.openedAt || 0).getTime();
+    const operationalResetAtMs = parseUpdatedAtTimestamp(state.meta?.operationalResetAt);
+    const currentAuditCutoffMs = Math.max(
+      Number.isFinite(currentCashOpenedAtMs) ? currentCashOpenedAtMs : 0,
+      Number.isFinite(operationalResetAtMs) ? operationalResetAtMs : 0
+    );
     const remoteCurrentCashAudit = uiState.remoteMonitorEvents.filter((event) => {
-      if (!Number.isFinite(currentCashOpenedAtMs) || currentCashOpenedAtMs <= 0) return true;
+      if (!Number.isFinite(currentAuditCutoffMs) || currentAuditCutoffMs <= 0) return true;
       const eventTs = new Date(event?.ts || event?.broadcastAt || 0).getTime();
-      return Number.isFinite(eventTs) && eventTs >= currentCashOpenedAtMs;
+      return Number.isFinite(eventTs) && eventTs >= currentAuditCutoffMs;
     });
     const closures = state.history90;
     const displayedAuditAll = dedupeAuditEvents([...remoteCurrentCashAudit, ...currentAudit])
@@ -5027,10 +5032,6 @@
         <div class="comanda-header">
           <div>
             <div class="comanda-identity-box">
-              <div class="comanda-identity-row">
-                <span class="comanda-identity-label">Comanda</span>
-                <span class="comanda-identity-id">${esc(comanda.id)}</span>
-              </div>
               <div class="comanda-identity-row">
                 <span class="comanda-identity-label">Mesa/Ref.</span>
                 <span class="comanda-identity-table">${esc(tableRef)}</span>
@@ -8891,6 +8892,8 @@
     state.cookHistory = [];
     state.auditLog = [];
     uiState.remoteMonitorEvents = [];
+    state.meta = state.meta || {};
+    state.meta.operationalResetAt = closedAt;
     state.cash = {
       id: `CX-${state.seq.cash++}`,
       openedAt: "",
