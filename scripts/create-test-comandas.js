@@ -40,8 +40,12 @@ async function fetchStateRow() {
   return data[0];
 }
 
-async function updateStateRow(payload) {
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/restobar_state?id=eq.main`, {
+async function updateStateRow(payload, expectedUpdatedAt = null) {
+  const query = new URLSearchParams({ id: "eq.main" });
+  if (expectedUpdatedAt) {
+    query.set("updated_at", `eq.${expectedUpdatedAt}`);
+  }
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/restobar_state?${query.toString()}`, {
     method: "PATCH",
     headers: {
       apikey: SUPABASE_ANON_KEY,
@@ -58,7 +62,11 @@ async function updateStateRow(payload) {
     const text = await response.text();
     throw new Error(`Falha ao atualizar estado: HTTP ${response.status} ${text}`);
   }
-  return response.json();
+  const data = await response.json();
+  if (expectedUpdatedAt && Array.isArray(data) && data.length === 0) {
+    throw new Error("O estado remoto mudou durante a atualizacao. Execute o script novamente.");
+  }
+  return data;
 }
 
 function nextEventId(state) {
@@ -247,7 +255,7 @@ async function main() {
   const row = await fetchStateRow();
   const state = clone(row.payload || {});
   const created = buildTestComandas(state, TEST_COMANDAS_COUNT);
-  await updateStateRow(state);
+  await updateStateRow(state, row.updated_at || null);
   const ids = created.map((c) => c.id).join(", ");
   console.log(`Comandas de teste criadas: ${created.length}`);
   console.log(`IDs: ${ids}`);

@@ -472,6 +472,21 @@
     return (hash >>> 0).toString(16).padStart(8, "0");
   }
 
+  function stableSerializeForHash(value) {
+    if (value === undefined) return "null";
+    if (value === null || typeof value !== "object") return JSON.stringify(value);
+    if (Array.isArray(value)) {
+      return `[${value.map((entry) => stableSerializeForHash(entry)).join(",")}]`;
+    }
+    const keys = Object.keys(value).sort();
+    const parts = [];
+    for (const key of keys) {
+      if (value[key] === undefined) continue;
+      parts.push(`${JSON.stringify(key)}:${stableSerializeForHash(value[key])}`);
+    }
+    return `{${parts.join(",")}}`;
+  }
+
   function buildCatalogSnapshot(source) {
     const users = sortByRowIdAsc(
       (Array.isArray(source?.users) ? source.users : [])
@@ -652,12 +667,14 @@
   function pickRowByTimestamp(localRow, remoteRow, options = {}) {
     if (!localRow) return remoteRow || null;
     if (!remoteRow) return localRow || null;
-    const localTs = new Date(options.getTimestamp ? options.getTimestamp(localRow) : localRow?.updatedAt || 0).getTime();
-    const remoteTs = new Date(options.getTimestamp ? options.getTimestamp(remoteRow) : remoteRow?.updatedAt || 0).getTime();
+    const localTs = parseUpdatedAtTimestamp(options.getTimestamp ? options.getTimestamp(localRow) : localRow?.updatedAt || 0);
+    const remoteTs = parseUpdatedAtTimestamp(options.getTimestamp ? options.getTimestamp(remoteRow) : remoteRow?.updatedAt || 0);
     const preferLocal = options.preferLocal !== false;
-    if (Number.isFinite(localTs) && Number.isFinite(remoteTs) && localTs !== remoteTs) {
+    if (localTs && remoteTs && localTs !== remoteTs) {
       return localTs > remoteTs ? localRow : remoteRow;
     }
+    if (remoteTs && !localTs) return remoteRow;
+    if (localTs && !remoteTs) return localRow;
     return preferLocal ? localRow : remoteRow;
   }
 
@@ -1838,6 +1855,27 @@
     }
   }
 
+  function buildComparableCloudState(source) {
+    const comparable = sanitizeStateForCloud(source);
+    comparable.meta = comparable.meta || {};
+    comparable.meta.lastCloudSyncAt = null;
+    return comparable;
+  }
+
+  function cloudStateFingerprint(source) {
+    try {
+      return hashText(stableSerializeForHash(buildComparableCloudState(source)));
+    } catch (_err) {
+      return "";
+    }
+  }
+
+  function areCloudStatesEquivalent(localCandidate, remoteCandidate) {
+    const localFingerprint = cloudStateFingerprint(localCandidate);
+    const remoteFingerprint = cloudStateFingerprint(remoteCandidate);
+    return Boolean(localFingerprint) && localFingerprint === remoteFingerprint;
+  }
+
   let state = loadState();
   let sessionUserId = loadSessionUserId(null);
   state.session = { userId: null };
@@ -1859,6 +1897,8 @@
     reconnectAttempts: 0,
     syncRetryCount: 0,
     pullDebounceTimer: null,
+    pullInFlight: false,
+    pullQueued: false,
     lastSyncErrorAt: null,
     lastSyncError: ""
   };
@@ -1995,6 +2035,20 @@
       }
       mergedForCloud = applyCatalogBackupRecovery(mergedForCloud, sanitized, remoteData?.payload || null);
       ensureCatalogBackup(mergedForCloud, "sync");
+      if (remoteData?.payload && typeof remoteData.payload === "object" && areCloudStatesEquivalent(mergedForCloud, remoteData.payload)) {
+        lastPushAt = Date.now();
+        state.meta = state.meta || {};
+        state.meta.lastCloudSyncAt = isoNow();
+        stateVersion++;
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        } catch (_lsErr) { }
+        supabaseCtx.syncRetryCount = 0;
+        supabaseCtx.lastSyncError = "";
+        supabaseCtx.lastSyncErrorAt = null;
+        setSupabaseStatus("conectado");
+        return;
+      }
 
       const payload = {
         id: "main",
@@ -2060,6 +2114,12 @@
   async function pullStateFromSupabase() {
     const client = getSupabaseClient();
     if (!client) return;
+    if (supabaseCtx.pullInFlight) {
+      supabaseCtx.pullQueued = true;
+      return;
+    }
+    supabaseCtx.pullInFlight = true;
+    supabaseCtx.pullQueued = false;
 
     try {
       const { data, error } = await client.from("restobar_state").select("payload,updated_at").eq("id", "main").maybeSingle();
@@ -2088,6 +2148,12 @@
       setSupabaseStatus("conectado");
     } catch (err) {
       setSupabaseStatus("aviso", String(err?.message || err || "Falha ao ler cloud."));
+    } finally {
+      supabaseCtx.pullInFlight = false;
+      if (supabaseCtx.pullQueued) {
+        supabaseCtx.pullQueued = false;
+        void pullStateFromSupabase();
+      }
     }
   }
 
@@ -3011,11 +3077,11 @@
           <form id="login-form" class="form" autocomplete="off">
             <div class="field">
               <label>Login</label>
-              <input name="login" required placeholder="Seu login" />
+              <input name="login" required placeholder="Seu login" autocomplete="username" />
             </div>
             <div class="field">
               <label>Senha</label>
-              <input name="password" type="password" required placeholder="Sua senha" />
+              <input name="password" type="password" required placeholder="Sua senha" autocomplete="current-password" />
             </div>
             <div class="actions">
               <button class="btn primary" type="submit">Entrar</button>
@@ -4088,7 +4154,7 @@
     return `
       <div class="detail-box" style="margin-top:0.75rem;">
         <div class="detail-header">
-          <h4>Detalhes da comanda ${esc(comanda.id)}</h4>
+          <h4>Detalhes da comanda</h4>
           <button class="btn secondary" data-action="close-comanda-details">Fechar</button>
         </div>
         <p class="note">Mesa: ${esc(comanda.table)} | Cliente: ${esc(comanda.customer || "-")} | Status: ${esc(comanda.status || "aberta")}</p>
@@ -4202,7 +4268,7 @@
           return `
               <details class="compact-details ${statusClass}" data-persist-key="${esc(comandaDetailKey)}" style="margin-top:0.65rem;"${detailOpenAttr(comandaDetailKey)}>
                 <summary>
-                  <b>${esc(comanda.id)}</b> | <span class="tag ${isClosed ? "status-comanda-fechada" : "status-comanda-aberta"}">${statusText}</span>${hasDeliveryRequested ? ` | <span class="tag">Entrega solicitada (${deliveryRequestedCount})</span>` : ""}${kitchenBadgeCompact ? ` | ${kitchenBadgeCompact}` : ""} | Mesa/ref: ${esc(comanda.table || "-")} | Garcom: ${esc(waiterName)} | Cliente: ${esc(comanda.customer || "-")} | Itens: ${validItems} | Total: ${money(comandaTotal(comanda))}
+                  <span class="tag ${isClosed ? "status-comanda-fechada" : "status-comanda-aberta"}">${statusText}</span>${hasDeliveryRequested ? ` | <span class="tag">Entrega solicitada (${deliveryRequestedCount})</span>` : ""}${kitchenBadgeCompact ? ` | ${kitchenBadgeCompact}` : ""} | Mesa/ref: ${esc(comanda.table || "-")} | Garcom: ${esc(waiterName)} | Cliente: ${esc(comanda.customer || "-")} | Itens: ${validItems} | Total: ${money(comandaTotal(comanda))}
                 </summary>
                 <div class="note" style="margin-top:0.45rem;">Atualizada em: ${formatDateTime(comandaUpdatedAt(comanda))}</div>
                 ${hasDeliveryRequested ? `<div class="note" style="margin-top:0.35rem;">Comanda aberta com pedido para entrega.</div>` : ""}
@@ -4540,7 +4606,6 @@
               <div>
                 <h5>${esc(row.item.name || "-")} x${row.item.qty}</h5>
                 <div class="monitor-order-pills">
-                  <span class="monitor-order-pill">Comanda ${esc(row.comanda.id)}</span>
                   <span class="monitor-order-pill">Mesa/ref ${esc(row.comanda.table || "-")}</span>
                   <span class="monitor-order-pill">Responsavel ${esc(responsible)}</span>
                   <span class="monitor-order-pill priority ${priorityClass}">${esc(priorityLabel)}</span>
@@ -4985,7 +5050,7 @@
     const methodOptions = PAYMENT_METHODS.map((m) => `<option value="${m.value}">${m.label}</option>`).join("");
     return `
       <form class="card form" data-role="finalize-form" data-comanda-id="${comanda.id}">
-        <h4>Finalizacao da comanda ${esc(comanda.id)}</h4>
+        <h4>Finalizacao da comanda</h4>
         <div class="note">Confira dados e escolha uma ou mais formas de pagamento. A soma deve bater com o total da comanda.</div>
         <div class="grid cols-2">
           <div class="field">
@@ -5248,7 +5313,7 @@
             ${rows
         .map(
           (row) =>
-            `<div class="waiter-ready-item status-${esc(row.status || "fila")}"><div><b>${esc(row.itemName)}</b> x${row.qty} | Comanda <b>${esc(row.comandaId)}</b> | Referencia ${esc(row.table || "-")}</div><div class="kitchen-alert-meta"><span class="tag">Status: ${esc(row.statusLabel || kitchenStatusLabel("fila"))}</span><span class="note">Atualizado em: ${formatDateTime(row.updatedAt)}</span></div>${row.waiterNote ? `<div class="note">Obs do pedido: ${esc(row.waiterNote)}</div>` : ""}${row.deliveryRequested ? `<div class="note">Entrega: ${esc(row.deliveryRecipient || "-")} | ${esc(row.deliveryLocation || "-")}</div>` : ""}</div>`
+            `<div class="waiter-ready-item status-${esc(row.status || "fila")}"><div><b>${esc(row.itemName)}</b> x${row.qty} | Referencia ${esc(row.table || "-")}</div><div class="kitchen-alert-meta"><span class="tag">Status: ${esc(row.statusLabel || kitchenStatusLabel("fila"))}</span><span class="note">Atualizado em: ${formatDateTime(row.updatedAt)}</span></div>${row.waiterNote ? `<div class="note">Obs do pedido: ${esc(row.waiterNote)}</div>` : ""}${row.deliveryRequested ? `<div class="note">Entrega: ${esc(row.deliveryRecipient || "-")} | ${esc(row.deliveryLocation || "-")}</div>` : ""}</div>`
         )
         .join("")}
           </div>
@@ -5271,10 +5336,10 @@
           <h3>Fila de Espera - Cozinha</h3>
           <p class="note">Tempo medio atual: <b>${avg} min</b></p>
           ${queue.length
-        ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="responsive-stack waiter-kitchen-table"><thead><tr><th>Comanda</th><th>Produto</th><th>Qtd</th><th>Obs cozinha</th><th>Prioridade</th><th>Status Cozinha</th><th>Tempo restante</th><th>Mesa/ref</th></tr></thead><tbody>${queue
+        ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="responsive-stack waiter-kitchen-table"><thead><tr><th>Cliente</th><th>Produto</th><th>Qtd</th><th>Obs cozinha</th><th>Prioridade</th><th>Status Cozinha</th><th>Tempo restante</th><th>Mesa/ref</th></tr></thead><tbody>${queue
           .map(
             (r) =>
-              `<tr><td data-label="Comanda">${esc(r.comanda.id)}</td><td data-label="Produto">${esc(r.item.name)}</td><td data-label="Qtd">${r.item.qty}</td><td data-label="Obs cozinha">${esc(r.item.waiterNote || "-")}</td><td data-label="Prioridade"><span class="tag">${esc(kitchenPriorityLabel(r.item.kitchenPriority || "normal"))}</span></td><td data-label="Status Cozinha"><span class="tag">${esc(kitchenStatusLabel(r.item.kitchenStatus || "fila"))}</span></td><td data-label="Tempo restante">${Math.ceil(r.remainingMs / 60000)} min</td><td data-label="Mesa/ref">${esc(r.comanda.table)}</td></tr>`
+              `<tr><td data-label="Cliente">${esc(r.comanda.customer || "-")}</td><td data-label="Produto">${esc(r.item.name)}</td><td data-label="Qtd">${r.item.qty}</td><td data-label="Obs cozinha">${esc(r.item.waiterNote || "-")}</td><td data-label="Prioridade"><span class="tag">${esc(kitchenPriorityLabel(r.item.kitchenPriority || "normal"))}</span></td><td data-label="Status Cozinha"><span class="tag">${esc(kitchenStatusLabel(r.item.kitchenStatus || "fila"))}</span></td><td data-label="Tempo restante">${Math.ceil(r.remainingMs / 60000)} min</td><td data-label="Mesa/ref">${esc(r.comanda.table)}</td></tr>`
           )
           .join("")}</tbody></table></div>`
         : `<div class="empty" style="margin-top:0.75rem;">Sem pedidos pendentes da cozinha.</div>`}
@@ -5482,7 +5547,6 @@
                   <div>
                     <h4>${esc(row.item.name)} x${row.item.qty}</h4>
                     <div class="kitchen-order-pills">
-                      <span class="kitchen-order-pill">Comanda ${esc(row.comanda.id)}</span>
                       <span class="kitchen-order-pill">Mesa/ref ${esc(row.comanda.table || "-")}</span>
                       <span class="kitchen-order-pill">Fila ${esc(queueInfo)}</span>
                       <span class="kitchen-order-pill priority ${priorityClass}">${esc(priorityLabel)}</span>
@@ -5593,7 +5657,7 @@
           <span class="status-dot ok"></span>
           <div>
             <p><b>Cozinha recebeu o pedido</b></p>
-            <p class="note">${esc(latest.itemName)} x${latest.qty} | Comanda ${esc(latest.comandaId)} | Ref. ${esc(latest.table || "-")} | ${formatDateTime(latest.receivedAt)}${latest.cookName ? ` | ${esc(latest.cookName)}` : ""}${extra ? ` | +${extra} novo(s)` : ""}</p>
+            <p class="note">${esc(latest.itemName)} x${latest.qty} | Ref. ${esc(latest.table || "-")} | ${formatDateTime(latest.receivedAt)}${latest.cookName ? ` | ${esc(latest.cookName)}` : ""}${extra ? ` | +${extra} novo(s)` : ""}</p>
           </div>
         </div>
         <div class="actions waiter-kitchen-receipt-actions">
@@ -6354,7 +6418,7 @@
       <div class="item-selector-modal-backdrop">
         <div class="card item-selector-modal">
           <h3>${mode === "increment" ? "Adicionar quantidade no item" : "Devolver/cancelar quantidade"}</h3>
-          <p class="note" style="margin-top:0.3rem;">Comanda ${esc(comanda.id)} | Referencia: ${esc(comanda.table || "-")}.</p>
+          <p class="note" style="margin-top:0.3rem;">Referencia: ${esc(comanda.table || "-")}.</p>
           <form class="form" data-role="item-selector-form" data-comanda-id="${comanda.id}" data-mode="${mode}" style="margin-top:0.7rem;">
             <div class="field">
               <label>Item</label>

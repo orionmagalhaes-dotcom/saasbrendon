@@ -19,11 +19,16 @@ const CONTENT_TYPES = {
   ".ico": "image/x-icon"
 };
 
+function isPathInsideRoot(targetPath) {
+  const relative = path.relative(ROOT, targetPath);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
 function safePath(urlPath) {
   const clean = decodeURIComponent(urlPath.split("?")[0].split("#")[0]);
   const normalized = clean === "/" ? "/index.html" : clean;
   const absolute = path.resolve(ROOT, `.${normalized}`);
-  if (!absolute.startsWith(ROOT)) return null;
+  if (!isPathInsideRoot(absolute)) return null;
   return absolute;
 }
 

@@ -86,6 +86,21 @@ function hashText(value) {
     return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
+function stableSerializeForHash(value) {
+    if (value === undefined) return "null";
+    if (value === null || typeof value !== "object") return JSON.stringify(value);
+    if (Array.isArray(value)) {
+        return `[${value.map((entry) => stableSerializeForHash(entry)).join(",")}]`;
+    }
+    const keys = Object.keys(value).sort();
+    const parts = [];
+    for (const key of keys) {
+        if (value[key] === undefined) continue;
+        parts.push(`${JSON.stringify(key)}:${stableSerializeForHash(value[key])}`);
+    }
+    return `{${parts.join(",")}}`;
+}
+
 function isoNow() {
     return new Date().toISOString();
 }
@@ -178,12 +193,14 @@ function mergedRowsById(localRows, remoteRows, deletedIds = [], options = {}) {
 function pickRowByTimestamp(localRow, remoteRow, options = {}) {
     if (!localRow) return remoteRow || null;
     if (!remoteRow) return localRow || null;
-    const localTs = new Date(options.getTimestamp ? options.getTimestamp(localRow) : localRow?.updatedAt || 0).getTime();
-    const remoteTs = new Date(options.getTimestamp ? options.getTimestamp(remoteRow) : remoteRow?.updatedAt || 0).getTime();
+    const localTs = parseUpdatedAtTimestamp(options.getTimestamp ? options.getTimestamp(localRow) : localRow?.updatedAt || 0);
+    const remoteTs = parseUpdatedAtTimestamp(options.getTimestamp ? options.getTimestamp(remoteRow) : remoteRow?.updatedAt || 0);
     const preferLocal = options.preferLocal !== false;
-    if (Number.isFinite(localTs) && Number.isFinite(remoteTs) && localTs !== remoteTs) {
+    if (localTs && remoteTs && localTs !== remoteTs) {
         return localTs > remoteTs ? localRow : remoteRow;
     }
+    if (remoteTs && !localTs) return remoteRow;
+    if (localTs && !remoteTs) return localRow;
     return preferLocal ? localRow : remoteRow;
 }
 
@@ -297,6 +314,38 @@ function hasSystemTestMarker(value) {
     const SYSTEM_TEST_MARKERS = ["teste", "test", "mock", "pixteste", "cupom de teste"];
     const lower = String(value || "").toLowerCase().trim();
     return SYSTEM_TEST_MARKERS.some((marker) => lower.includes(marker));
+}
+
+function sanitizeStateForCloud(source) {
+    try {
+        const cloned = JSON.parse(JSON.stringify(source));
+        cloned.session = { userId: null };
+        return cloned;
+    } catch (_err) {
+        const fallback = { ...source, session: { userId: null } };
+        return fallback;
+    }
+}
+
+function buildComparableCloudState(source) {
+    const comparable = sanitizeStateForCloud(source);
+    comparable.meta = comparable.meta || {};
+    comparable.meta.lastCloudSyncAt = null;
+    return comparable;
+}
+
+function cloudStateFingerprint(source) {
+    try {
+        return hashText(stableSerializeForHash(buildComparableCloudState(source)));
+    } catch (_err) {
+        return "";
+    }
+}
+
+function areCloudStatesEquivalent(localCandidate, remoteCandidate) {
+    const localFingerprint = cloudStateFingerprint(localCandidate);
+    const remoteFingerprint = cloudStateFingerprint(remoteCandidate);
+    return Boolean(localFingerprint) && localFingerprint === remoteFingerprint;
 }
 
 // ======================================================
@@ -442,6 +491,22 @@ section("pickRowByTimestamp");
     const same2 = { id: 1, name: "R", updatedAt: "2025-01-01T00:00:00Z" };
     assertEqual(pickRowByTimestamp(same1, same2, { preferLocal: true })?.name, "L", "mesma ts com preferLocal retorna local");
     assertEqual(pickRowByTimestamp(same1, same2, { preferLocal: false })?.name, "R", "mesma ts sem preferLocal retorna remote");
+
+    const invalidLocal = { id: 1, name: "Local invalido", updatedAt: "not-a-date" };
+    const validRemote = { id: 1, name: "Remoto valido", updatedAt: "2025-06-15T00:00:00Z" };
+    assertEqual(
+        pickRowByTimestamp(invalidLocal, validRemote, { preferLocal: true })?.name,
+        "Remoto valido",
+        "timestamp remoto valido prevalece sobre timestamp local invalido"
+    );
+
+    const validLocal = { id: 1, name: "Local valido", updatedAt: "2025-07-01T00:00:00Z" };
+    const invalidRemote = { id: 1, name: "Remoto invalido", updatedAt: "invalid" };
+    assertEqual(
+        pickRowByTimestamp(validLocal, invalidRemote, { preferLocal: false })?.name,
+        "Local valido",
+        "timestamp local valido prevalece sobre timestamp remoto invalido"
+    );
 }
 
 section("mergeComandasById");
@@ -630,17 +695,6 @@ section("Edge cases — arrays vazios no Math.max");
 
 section("sanitizeStateForCloud (simulated)");
 {
-    function sanitizeStateForCloud(source) {
-        try {
-            const cloned = JSON.parse(JSON.stringify(source));
-            cloned.session = { userId: null };
-            return cloned;
-        } catch (_err) {
-            const fallback = { ...source, session: { userId: null } };
-            return fallback;
-        }
-    }
-
     const input = { users: [{ id: 1 }], session: { userId: 5 }, meta: { updatedAt: "2025-01-01" } };
     const result = sanitizeStateForCloud(input);
     assertEqual(result.session.userId, null, "session limpa");
@@ -651,6 +705,29 @@ section("sanitizeStateForCloud (simulated)");
     const simple = { a: 1, session: { userId: 10 } };
     const result2 = sanitizeStateForCloud(simple);
     assertEqual(result2.session.userId, null, "fallback funciona");
+}
+
+section("areCloudStatesEquivalent");
+{
+    const left = {
+        meta: { updatedAt: "2026-03-08T00:00:00.000Z", lastCloudSyncAt: "2026-03-08T01:00:00.000Z" },
+        session: { userId: 5 },
+        users: [{ id: 1, name: "Admin" }],
+        products: [{ id: 2, name: "Refrigerante" }]
+    };
+    const right = {
+        products: [{ name: "Refrigerante", id: 2 }],
+        users: [{ name: "Admin", id: 1 }],
+        session: { userId: null },
+        meta: { lastCloudSyncAt: null, updatedAt: "2026-03-08T00:00:00.000Z" }
+    };
+    assert(areCloudStatesEquivalent(left, right), "ignora sessao e lastCloudSyncAt ao comparar payload cloud");
+
+    const changed = {
+        ...right,
+        meta: { ...right.meta, updatedAt: "2026-03-08T02:00:00.000Z" }
+    };
+    assert(!areCloudStatesEquivalent(left, changed), "updatedAt diferente ainda conta como mudanca relevante");
 }
 
 section("adoptIncomingState (simulated)");
