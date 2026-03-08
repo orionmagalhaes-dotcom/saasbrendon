@@ -116,6 +116,32 @@ function selectLatestOperationalResetAt(...values) {
     return best;
 }
 
+function normalizeIsoTimestamp(value) {
+    const ts = parseUpdatedAtTimestamp(value);
+    if (!ts) return "";
+    return new Date(ts).toISOString();
+}
+
+function applyRealtimeAuditCutoff(targetState, cutoffIso) {
+    if (!targetState || typeof targetState !== "object") return;
+    const normalizedCutoff = normalizeIsoTimestamp(cutoffIso);
+    targetState.meta = targetState.meta || {};
+    if (!normalizedCutoff) {
+        targetState.meta.realtimeAuditResetAt = "";
+        return;
+    }
+    const cutoffMs = parseUpdatedAtTimestamp(normalizedCutoff);
+    if (!cutoffMs) {
+        targetState.meta.realtimeAuditResetAt = "";
+        return;
+    }
+    targetState.auditLog = (Array.isArray(targetState.auditLog) ? targetState.auditLog : []).filter((event) => {
+        const ts = parseUpdatedAtTimestamp(event?.ts);
+        return ts && ts >= cutoffMs;
+    });
+    targetState.meta.realtimeAuditResetAt = normalizedCutoff;
+}
+
 function sortByRowIdAsc(rows = []) {
     return [...rows].sort((a, b) => String(a?.id ?? "").localeCompare(String(b?.id ?? ""), undefined, { numeric: true }));
 }
@@ -236,6 +262,22 @@ function shouldForceRemotePreference(localCandidate, remoteCandidate) {
     if (!isLikelyResetState(localCandidate)) return false;
     const remote = stateFootprint(remoteCandidate);
     return remote.catalogRows >= 3 || remote.operationalRows >= 5;
+}
+
+function resolveOperationalResetAtForMerge(localCandidate, remoteCandidate) {
+    const localResetAt = normalizeOperationalResetAt(localCandidate?.meta?.operationalResetAt);
+    const remoteResetAt = normalizeOperationalResetAt(remoteCandidate?.meta?.operationalResetAt);
+    if (!localResetAt) return remoteResetAt;
+    if (!remoteResetAt) return localResetAt;
+    const localTs = parseUpdatedAtTimestamp(localResetAt);
+    const remoteTs = parseUpdatedAtTimestamp(remoteResetAt);
+    if (localTs > remoteTs) {
+        const remote = stateFootprint(remoteCandidate);
+        if (!isLikelyResetState(remoteCandidate) && remote.operationalRows >= 5) {
+            return remoteResetAt;
+        }
+    }
+    return selectLatestOperationalResetAt(localResetAt, remoteResetAt);
 }
 
 function esc(value) {
@@ -488,6 +530,45 @@ section("shouldForceRemotePreference");
     assert(shouldForceRemotePreference(empty, rich), "estado local vazio, remoto rico = force remote");
     assert(!shouldForceRemotePreference(rich, empty), "estado local rico, remoto vazio = nao force remote");
     assert(!shouldForceRemotePreference(rich, rich), "ambos ricos = nao force remote");
+}
+
+section("resolveOperationalResetAtForMerge");
+{
+    const localNewer = {
+        meta: { operationalResetAt: "2026-03-08T02:38:15.810Z" },
+        auditLog: [],
+        history90: [],
+        payables: [],
+        cashHtmlReports: []
+    };
+    const remoteRich = {
+        meta: { operationalResetAt: "2026-03-01T10:16:33.222Z" },
+        openComandas: [{ id: "CMD-OPEN-1" }],
+        closedComandas: [{ id: "CMD-1" }],
+        history90: [{ id: "H1" }],
+        payables: [{ id: "PG-1" }],
+        cashHtmlReports: [{ id: "CHR-1" }]
+    };
+    assertEqual(
+        resolveOperationalResetAtForMerge(localNewer, remoteRich),
+        "2026-03-01T10:16:33.222Z",
+        "quando remoto ainda tem operacao rica, cutoff local mais novo nao deve esconder dados"
+    );
+}
+
+section("applyRealtimeAuditCutoff");
+{
+    const state = {
+        auditLog: [
+            { id: "E-old", ts: "2026-03-07T23:59:59.000Z" },
+            { id: "E-new", ts: "2026-03-08T00:00:01.000Z" }
+        ],
+        meta: {}
+    };
+    applyRealtimeAuditCutoff(state, "2026-03-08T00:00:00.000Z");
+    assertEqual(state.auditLog.length, 1, "remove auditoria anterior ao reset");
+    assertEqual(state.auditLog[0].id, "E-new", "mantem auditoria posterior ao reset");
+    assertEqual(state.meta.realtimeAuditResetAt, "2026-03-08T00:00:00.000Z", "persistencia do cutoff dedicado");
 }
 
 section("esc");

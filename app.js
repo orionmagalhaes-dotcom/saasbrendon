@@ -802,6 +802,26 @@
     return best;
   }
 
+  function applyRealtimeAuditCutoff(targetState, cutoffIso) {
+    if (!targetState || typeof targetState !== "object") return;
+    const normalizedCutoff = normalizeIsoTimestamp(cutoffIso);
+    targetState.meta = targetState.meta || {};
+    if (!normalizedCutoff) {
+      targetState.meta.realtimeAuditResetAt = "";
+      return;
+    }
+    const cutoffMs = parseUpdatedAtTimestamp(normalizedCutoff);
+    if (!cutoffMs) {
+      targetState.meta.realtimeAuditResetAt = "";
+      return;
+    }
+    targetState.auditLog = (Array.isArray(targetState.auditLog) ? targetState.auditLog : []).filter((event) => {
+      const ts = parseUpdatedAtTimestamp(event?.ts);
+      return ts && ts >= cutoffMs;
+    });
+    targetState.meta.realtimeAuditResetAt = normalizedCutoff;
+  }
+
   function selectLatestTimestampIso(...values) {
     let best = "";
     let bestTs = 0;
@@ -911,6 +931,22 @@
     return remote.catalogRows >= 3 || remote.operationalRows >= 5;
   }
 
+  function resolveOperationalResetAtForMerge(localState, remoteState) {
+    const localResetAt = normalizeOperationalResetAt(localState?.meta?.operationalResetAt);
+    const remoteResetAt = normalizeOperationalResetAt(remoteState?.meta?.operationalResetAt);
+    if (!localResetAt) return remoteResetAt;
+    if (!remoteResetAt) return localResetAt;
+    const localTs = parseUpdatedAtTimestamp(localResetAt);
+    const remoteTs = parseUpdatedAtTimestamp(remoteResetAt);
+    if (localTs > remoteTs) {
+      const remote = stateFootprint(remoteState);
+      if (!isLikelyResetState(remoteState) && remote.operationalRows >= 5) {
+        return remoteResetAt;
+      }
+    }
+    return selectLatestOperationalResetAt(localResetAt, remoteResetAt);
+  }
+
   function mergeStateForCloud(localState, remoteState) {
     const localMeta = localState?.meta || {};
     const remoteMeta = remoteState?.meta || {};
@@ -920,7 +956,8 @@
     if (preferLocal && shouldForceRemotePreference(localState, remoteState)) {
       preferLocal = false;
     }
-    const operationalResetAt = selectLatestOperationalResetAt(localMeta.operationalResetAt, remoteMeta.operationalResetAt);
+    const operationalResetAt = resolveOperationalResetAtForMerge(localState, remoteState);
+    const realtimeAuditResetAt = selectLatestTimestampIso(localMeta.realtimeAuditResetAt, remoteMeta.realtimeAuditResetAt);
     const financeCycleStartedAt = selectLatestTimestampIso(localMeta.financeCycleStartedAt, remoteMeta.financeCycleStartedAt);
     const catalogBackups = mergeCatalogBackups(localMeta[CATALOG_BACKUPS_META_KEY], remoteMeta[CATALOG_BACKUPS_META_KEY]);
     const deletedProductIdsRaw = normalizeDeletedIdList([
@@ -1015,11 +1052,13 @@
         deletedUserIds,
         deletedComandaIds,
         operationalResetAt,
+        realtimeAuditResetAt,
         financeCycleStartedAt
       },
       cash: { ...(preferLocal ? remoteState?.cash || {} : localState?.cash || {}), ...(preferLocal ? localState?.cash || {} : remoteState?.cash || {}) }
     };
     applyOperationalResetCutoff(merged, operationalResetAt);
+    applyRealtimeAuditCutoff(merged, realtimeAuditResetAt);
     sanitizeOperationalComandasAgainstHistory(merged);
     merged.seq = merged.seq || {};
     const maxUserId = Math.max(0, ...(Array.isArray(merged.users) ? merged.users : []).map((u) => Number(u?.id || 0)));
@@ -1080,6 +1119,7 @@
         deletedComandaIds: [],
         financeCycleStartedAt: "",
         operationalResetAt: "",
+        realtimeAuditResetAt: "",
         [FINAL_CLIENT_PREP_FLAG]: true,
         [FINAL_CLIENT_PREP_MARKER]: isoNow(),
         [FINAL_CLIENT_PREP_SIGNATURE_KEY]: FINAL_CLIENT_PREP_SIGNATURE
@@ -1664,6 +1704,7 @@
         deletedComandaIds: deletedComandaIdsRaw,
         financeCycleStartedAt: normalizeIsoTimestamp(parsed.meta?.financeCycleStartedAt),
         operationalResetAt: normalizeOperationalResetAt(parsed.meta?.operationalResetAt),
+        realtimeAuditResetAt: normalizeIsoTimestamp(parsed.meta?.realtimeAuditResetAt),
         [FINAL_CLIENT_PREP_FLAG]: parsed.meta?.[FINAL_CLIENT_PREP_FLAG] === true,
         [FINAL_CLIENT_PREP_MARKER]:
           typeof parsed.meta?.[FINAL_CLIENT_PREP_MARKER] === "string" && parsed.meta?.[FINAL_CLIENT_PREP_MARKER]
@@ -1691,6 +1732,7 @@
     purgeSystemTestArtifacts(recovered);
     applyFinalClientPreparation(recovered);
     applyOperationalResetCutoff(recovered, recovered.meta?.operationalResetAt);
+    applyRealtimeAuditCutoff(recovered, recovered.meta?.realtimeAuditResetAt);
     sanitizeOperationalComandasAgainstHistory(recovered);
     recomputeComandaSequence(recovered);
     ensureCatalogBackup(recovered, "normalize");
@@ -4253,10 +4295,10 @@
   function renderAdminHistory() {
     const currentAudit = state.auditLog.slice(0, 5000);
     const currentCashOpenedAtMs = new Date(state.cash?.openedAt || 0).getTime();
-    const operationalResetAtMs = parseUpdatedAtTimestamp(state.meta?.operationalResetAt);
+    const realtimeAuditResetAtMs = parseUpdatedAtTimestamp(state.meta?.realtimeAuditResetAt);
     const currentAuditCutoffMs = Math.max(
       Number.isFinite(currentCashOpenedAtMs) ? currentCashOpenedAtMs : 0,
-      Number.isFinite(operationalResetAtMs) ? operationalResetAtMs : 0
+      Number.isFinite(realtimeAuditResetAtMs) ? realtimeAuditResetAtMs : 0
     );
     const remoteCurrentCashAudit = uiState.remoteMonitorEvents.filter((event) => {
       if (!Number.isFinite(currentAuditCutoffMs) || currentAuditCutoffMs <= 0) return true;
@@ -8893,7 +8935,7 @@
     state.auditLog = [];
     uiState.remoteMonitorEvents = [];
     state.meta = state.meta || {};
-    state.meta.operationalResetAt = closedAt;
+    state.meta.realtimeAuditResetAt = closedAt;
     state.cash = {
       id: `CX-${state.seq.cash++}`,
       openedAt: "",
