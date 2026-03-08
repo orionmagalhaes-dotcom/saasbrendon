@@ -2144,7 +2144,14 @@
       const localUpdated = parseUpdatedAtTimestamp(state.meta?.updatedAt);
       const remoteMetaUpdated = parseUpdatedAtTimestamp(data.payload?.meta?.updatedAt);
       const remoteUpdated = remoteMetaUpdated || (!localUpdated ? parseUpdatedAtTimestamp(data.updated_at) : 0);
-      if (Number.isFinite(remoteUpdated) && remoteUpdated > localUpdated) {
+      const localFootprint = stateFootprint(state);
+      const remoteFootprint = stateFootprint(data.payload);
+      const localLooksReset = isLikelyResetState(state);
+      const remoteHasMoreData =
+        remoteFootprint.catalogRows > localFootprint.catalogRows ||
+        remoteFootprint.operationalRows > localFootprint.operationalRows;
+      const shouldPull = (Number.isFinite(remoteUpdated) && remoteUpdated > localUpdated) || (localLooksReset && remoteHasMoreData);
+      if (shouldPull) {
         if (shouldForceRemotePreference(data.payload, state)) {
           setSupabaseStatus("aviso", "Pull remoto ignorado para evitar sobrescrita destrutiva do historico local.");
           return;
