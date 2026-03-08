@@ -690,6 +690,35 @@
     return [...map.values()].sort((a, b) => Number(a?.id || 0) - Number(b?.id || 0));
   }
 
+  function mergedRowsByIdWithCatalogFallback(localRows, remoteRows, deletedIds = [], options = {}) {
+    const deletedSet = new Set(normalizeDeletedIdList(deletedIds));
+    const merged = mergedRowsById(localRows, remoteRows, deletedIds, {
+      ...options,
+      allowRemoteOnly: true
+    });
+    if (merged.length) return merged;
+
+    const normalizeSourceRows = (rows) => {
+      const map = new Map();
+      for (const row of Array.isArray(rows) ? rows : []) {
+        const id = String(row?.id ?? "").trim();
+        if (!id || deletedSet.has(id)) continue;
+        if (!map.has(id)) {
+          map.set(id, { ...row });
+        }
+      }
+      return [...map.values()].sort((a, b) => Number(a?.id || 0) - Number(b?.id || 0));
+    };
+
+    const localClean = normalizeSourceRows(localRows);
+    const remoteClean = normalizeSourceRows(remoteRows);
+    const localOnly = localClean.length > 0 && remoteClean.length === 0;
+    const remoteOnly = remoteClean.length > 0 && localClean.length === 0;
+    if (localOnly) return localClean;
+    if (remoteOnly) return remoteClean;
+    return merged;
+  }
+
   function pickRowByTimestamp(localRow, remoteRow, options = {}) {
     if (!localRow) return remoteRow || null;
     if (!remoteRow) return localRow || null;
@@ -971,7 +1000,8 @@
   function shouldForceRemotePreference(localCandidate, remoteCandidate) {
     if (!isLikelyResetState(localCandidate)) return false;
     const remote = stateFootprint(remoteCandidate);
-    return remote.catalogRows >= 3 || remote.operationalRows >= 5;
+    const local = stateFootprint(localCandidate);
+    return remote.catalogRows > local.catalogRows || remote.operationalRows >= 5;
   }
 
   function resolveOperationalResetAtForMerge(localState, remoteState) {
@@ -1071,13 +1101,13 @@
     const merged = {
       ...(preferLocal ? remoteState : localState),
       ...(preferLocal ? localState : remoteState),
-      users: mergedRowsById(localState?.users, remoteState?.users, deletedUserIds, {
+      users: mergedRowsByIdWithCatalogFallback(localState?.users, remoteState?.users, deletedUserIds, {
         preferLocal,
-        allowRemoteOnly: !preferLocal
+        allowRemoteOnly: false
       }),
-      products: mergedRowsById(localState?.products, remoteState?.products, deletedProductIds, {
+      products: mergedRowsByIdWithCatalogFallback(localState?.products, remoteState?.products, deletedProductIds, {
         preferLocal,
-        allowRemoteOnly: !preferLocal
+        allowRemoteOnly: false
       }),
       openComandas: mergedOpenComandas,
       closedComandas: mergedClosedComandas,
