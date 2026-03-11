@@ -61,6 +61,8 @@
   const DEV_SESSION_ID = "__dev__";
   const DEVICE_PRESENCE_TTL_MS = 45 * 1000;
   const DEVICE_PRESENCE_PING_MS = 10 * 1000;
+  const CLOUD_SYNC_DEBOUNCE_MS = 1200;
+  const CLOUD_POLL_INTERVAL_MS = 30 * 1000;
   const ROLE_ACCESS_CODE_BY_ROLE = Object.freeze({
     admin: "1111",
     waiter: "2222",
@@ -1912,12 +1914,56 @@
     pullInFlight: false,
     pullQueued: false,
     lastSyncErrorAt: null,
-    lastSyncError: ""
+    lastSyncError: "",
+    lastKnownRemoteUpdatedAt: "",
+    lastObservedRemoteUpdatedAt: "",
+    lastSyncedCloudFingerprint: ""
   };
 
   let stateVersion = 0;
   let lastRenderedVersion = -1;
   let lastPushAt = 0;
+
+  function rememberObservedRemoteUpdatedAt(updatedAtValue) {
+    const normalized = normalizeIsoTimestamp(updatedAtValue);
+    if (!normalized) return "";
+    const incomingTs = parseUpdatedAtTimestamp(normalized);
+    const currentTs = parseUpdatedAtTimestamp(supabaseCtx.lastObservedRemoteUpdatedAt);
+    if (!currentTs || incomingTs >= currentTs) {
+      supabaseCtx.lastObservedRemoteUpdatedAt = normalized;
+    }
+    return normalized;
+  }
+
+  function rememberKnownRemoteUpdatedAt(updatedAtValue) {
+    const normalized = rememberObservedRemoteUpdatedAt(updatedAtValue);
+    if (!normalized) return "";
+    supabaseCtx.lastKnownRemoteUpdatedAt = normalized;
+    return normalized;
+  }
+
+  function rememberSyncedCloudFingerprint(source) {
+    const fingerprint = cloudStateFingerprint(source);
+    if (!fingerprint) return "";
+    supabaseCtx.lastSyncedCloudFingerprint = fingerprint;
+    return fingerprint;
+  }
+
+  function finalizeSuccessfulCloudSync(source, remoteUpdatedAtValue) {
+    lastPushAt = Date.now();
+    state.meta = state.meta || {};
+    state.meta.lastCloudSyncAt = isoNow();
+    stateVersion++;
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch (_lsErr) { }
+    rememberKnownRemoteUpdatedAt(remoteUpdatedAtValue);
+    rememberSyncedCloudFingerprint(source);
+    supabaseCtx.syncRetryCount = 0;
+    supabaseCtx.lastSyncError = "";
+    supabaseCtx.lastSyncErrorAt = null;
+    setSupabaseStatus("conectado");
+  }
 
   function adoptIncomingState(source) {
     if (!source || typeof source !== "object" || Array.isArray(source)) {
@@ -2005,7 +2051,7 @@
     supabaseCtx.syncTimer = setTimeout(() => {
       supabaseCtx.syncTimer = null;
       void syncStateToSupabase();
-    }, 400);
+    }, CLOUD_SYNC_DEBOUNCE_MS);
   }
 
   function clearSupabaseReconnectTimer() {
@@ -2035,30 +2081,53 @@
     supabaseCtx.syncQueued = false;
     ensureCatalogBackup(state, "sync");
     const sanitized = sanitizeStateForCloud(state);
+    const localFingerprint = cloudStateFingerprint(sanitized);
+    if (localFingerprint && localFingerprint === supabaseCtx.lastSyncedCloudFingerprint) {
+      supabaseCtx.syncRetryCount = 0;
+      supabaseCtx.lastSyncError = "";
+      supabaseCtx.lastSyncErrorAt = null;
+      setSupabaseStatus("conectado");
+      supabaseCtx.syncInFlight = false;
+      return;
+    }
     try {
+      const knownRemoteUpdatedAt = normalizeIsoTimestamp(supabaseCtx.lastKnownRemoteUpdatedAt);
+      if (knownRemoteUpdatedAt) {
+        const optimisticUpdatedAt = isoNow();
+        const { data: optimisticRows, error: optimisticErr } = await client.from("restobar_state")
+          .update({ updated_at: optimisticUpdatedAt, payload: sanitized })
+          .eq("id", "main")
+          .eq("updated_at", knownRemoteUpdatedAt)
+          .select("updated_at");
+        if (optimisticErr) {
+          throw optimisticErr;
+        }
+        const optimisticUpdatedAtRemote = Array.isArray(optimisticRows) ? optimisticRows[0]?.updated_at : "";
+        if (optimisticUpdatedAtRemote) {
+          finalizeSuccessfulCloudSync(sanitized, optimisticUpdatedAtRemote);
+          return;
+        }
+      }
+
       let mergedForCloud = sanitized;
       const { data: remoteData, error: remoteErr } = await client
         .from("restobar_state")
         .select("payload,updated_at")
         .eq("id", "main")
         .maybeSingle();
-      if (!remoteErr && remoteData?.payload && typeof remoteData.payload === "object") {
+      if (remoteErr) {
+        throw remoteErr;
+      }
+      if (remoteData?.updated_at) {
+        rememberObservedRemoteUpdatedAt(remoteData.updated_at);
+      }
+      if (remoteData?.payload && typeof remoteData.payload === "object") {
         mergedForCloud = mergeStateForCloud(sanitized, remoteData.payload);
       }
       mergedForCloud = applyCatalogBackupRecovery(mergedForCloud, sanitized, remoteData?.payload || null);
       ensureCatalogBackup(mergedForCloud, "sync");
       if (remoteData?.payload && typeof remoteData.payload === "object" && areCloudStatesEquivalent(mergedForCloud, remoteData.payload)) {
-        lastPushAt = Date.now();
-        state.meta = state.meta || {};
-        state.meta.lastCloudSyncAt = isoNow();
-        stateVersion++;
-        try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-        } catch (_lsErr) { }
-        supabaseCtx.syncRetryCount = 0;
-        supabaseCtx.lastSyncError = "";
-        supabaseCtx.lastSyncErrorAt = null;
-        setSupabaseStatus("conectado");
+        finalizeSuccessfulCloudSync(mergedForCloud, remoteData.updated_at);
         return;
       }
 
@@ -2068,40 +2137,28 @@
         payload: mergedForCloud
       };
       // Optimistic locking: só atualiza se updated_at não mudou desde o read
-      const remoteUpdatedAt = remoteData?.updated_at || null;
+      const remoteUpdatedAt = normalizeIsoTimestamp(remoteData?.updated_at);
       let writeResult;
       if (remoteUpdatedAt) {
         writeResult = await client.from("restobar_state")
           .update({ updated_at: payload.updated_at, payload: payload.payload })
           .eq("id", "main")
           .eq("updated_at", remoteUpdatedAt)
-          .select();
+          .select("updated_at");
       } else {
-        writeResult = await client.from("restobar_state").upsert(payload).select();
+        writeResult = await client.from("restobar_state").upsert(payload).select("updated_at");
       }
       const { error, data: writeData } = writeResult;
       if (error) {
         throw error;
       }
+      const writtenUpdatedAt = Array.isArray(writeData) ? writeData[0]?.updated_at : "";
       // Se update não afetou nenhuma linha, outro device escreveu → re-sync
-      if (remoteUpdatedAt && Array.isArray(writeData) && writeData.length === 0) {
+      if (remoteUpdatedAt && !writtenUpdatedAt) {
         supabaseCtx.syncQueued = true;
         return;
       }
-      lastPushAt = Date.now();
-      // NÃO chamar adoptIncomingState aqui: isso substituía o state
-      // inteiro via normalizeStateShape, podendo descartar comandas
-      // criadas entre o snapshot (sanitized) e a conclusão do push.
-      state.meta = state.meta || {};
-      state.meta.lastCloudSyncAt = isoNow();
-      stateVersion++;
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      } catch (_lsErr) { }
-      supabaseCtx.syncRetryCount = 0;
-      supabaseCtx.lastSyncError = "";
-      supabaseCtx.lastSyncErrorAt = null;
-      setSupabaseStatus("conectado");
+      finalizeSuccessfulCloudSync(payload.payload, writtenUpdatedAt || payload.updated_at);
     } catch (err) {
       supabaseCtx.syncQueued = true;
       supabaseCtx.syncRetryCount = Math.min(supabaseCtx.syncRetryCount + 1, 8);
@@ -2140,6 +2197,9 @@
         console.warn("[pullStateFromSupabase] Payload remoto invalido, ignorando.");
         return;
       }
+      if (data?.updated_at) {
+        rememberKnownRemoteUpdatedAt(data.updated_at);
+      }
 
       const localUpdated = parseUpdatedAtTimestamp(state.meta?.updatedAt);
       const remoteMetaUpdated = parseUpdatedAtTimestamp(data.payload?.meta?.updatedAt);
@@ -2164,6 +2224,9 @@
         saveState({ skipCloud: true, touchMeta: false });
         render();
       }
+      if (areCloudStatesEquivalent(state, data.payload)) {
+        rememberSyncedCloudFingerprint(state);
+      }
       setSupabaseStatus("conectado");
     } catch (err) {
       setSupabaseStatus("aviso", String(err?.message || err || "Falha ao ler cloud."));
@@ -2174,6 +2237,23 @@
         void pullStateFromSupabase();
       }
     }
+  }
+
+  async function pollSupabaseRemoteMetadata() {
+    const client = getSupabaseClient();
+    if (!client || supabaseCtx.pullInFlight) return;
+    try {
+      const { data, error } = await client.from("restobar_state").select("updated_at").eq("id", "main").maybeSingle();
+      if (error || !data?.updated_at) return;
+      const observedUpdatedAt = rememberObservedRemoteUpdatedAt(data.updated_at);
+      if (!observedUpdatedAt) return;
+      const observedTs = parseUpdatedAtTimestamp(observedUpdatedAt);
+      const knownTs = parseUpdatedAtTimestamp(supabaseCtx.lastKnownRemoteUpdatedAt);
+      const localTs = parseUpdatedAtTimestamp(state.meta?.updatedAt);
+      if (observedTs > Math.max(knownTs, localTs)) {
+        debouncedPullFromSupabase();
+      }
+    } catch (_err) { }
   }
 
   function pushRemoteMonitorEvent(payload) {
@@ -9714,8 +9794,9 @@
   }, DEVICE_PRESENCE_PING_MS);
 
   setInterval(() => {
-    void pullStateFromSupabase();
-  }, 20000);
+    if (document.visibilityState === "hidden") return;
+    void pollSupabaseRemoteMetadata();
+  }, CLOUD_POLL_INTERVAL_MS);
 
   broadcastPresencePing();
   void connectSupabase();
