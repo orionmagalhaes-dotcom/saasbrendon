@@ -10,6 +10,7 @@
   const HISTORY_RETENTION_DAYS = 90;
   const PAYABLES_RETENTION_DAYS = 350;
   const CASH_HTML_REPORTS_LIMIT = 120;
+  const INTERNAL_CASH_AUDIT_LIMIT = 120;
   const FINANCE_CYCLE_DAYS = 30;
   const FINANCE_CYCLE_REPORTS_LIMIT = 120;
   const FINAL_CLIENT_PREP_FLAG = "final_client_ready_v1";
@@ -61,7 +62,9 @@
   const DEV_SESSION_ID = "__dev__";
   const DEVICE_PRESENCE_TTL_MS = 45 * 1000;
   const DEVICE_PRESENCE_PING_MS = 10 * 1000;
-  const CLOUD_SYNC_DEBOUNCE_MS = 1200;
+  const CLOUD_SYNC_DEBOUNCE_MS = 250;
+  const CLOUD_PULL_DEBOUNCE_MS = 400;
+  const CLOUD_REMOTE_PULL_DEBOUNCE_MS = 120;
   const CLOUD_POLL_INTERVAL_MS = 30 * 1000;
   const ROLE_ACCESS_CODE_BY_ROLE = Object.freeze({
     admin: "1111",
@@ -915,6 +918,9 @@
     targetState.cashHtmlReports = (Array.isArray(targetState.cashHtmlReports) ? targetState.cashHtmlReports : []).filter((row) =>
       tsAtOrAfterCutoff(row?.closedAt || row?.createdAt)
     );
+    targetState.internalCashAudits = (Array.isArray(targetState.internalCashAudits) ? targetState.internalCashAudits : []).filter((row) =>
+      tsAtOrAfterCutoff(row?.closedAt || row?.createdAt)
+    );
     targetState.financeCycleReports = (Array.isArray(targetState.financeCycleReports) ? targetState.financeCycleReports : []).filter((row) =>
       tsAtOrAfterCutoff(row?.endAt || row?.generatedAt)
     );
@@ -933,6 +939,7 @@
     const auditLog = Array.isArray(source?.auditLog) ? source.auditLog.length : 0;
     const payables = Array.isArray(source?.payables) ? source.payables.length : 0;
     const cashHtmlReports = Array.isArray(source?.cashHtmlReports) ? source.cashHtmlReports.length : 0;
+    const internalCashAudits = Array.isArray(source?.internalCashAudits) ? source.internalCashAudits.length : 0;
     const financeCycleReports = Array.isArray(source?.financeCycleReports) ? source.financeCycleReports.length : 0;
     const cookHistory = Array.isArray(source?.cookHistory) ? source.cookHistory.length : 0;
     return {
@@ -944,16 +951,17 @@
       auditLog,
       payables,
       cashHtmlReports,
+      internalCashAudits,
       financeCycleReports,
       cookHistory,
       catalogRows: users + products,
-      operationalRows: openComandas + closedComandas + history90 + auditLog + payables + cashHtmlReports + financeCycleReports + cookHistory
+      operationalRows: openComandas + closedComandas + history90 + auditLog + payables + cashHtmlReports + internalCashAudits + financeCycleReports + cookHistory
     };
   }
 
   function isLikelyResetState(source) {
     const fp = stateFootprint(source);
-    return fp.users <= 1 && fp.products === 0 && fp.openComandas === 0 && fp.closedComandas === 0 && fp.history90 === 0 && fp.payables === 0 && fp.cashHtmlReports === 0 && fp.financeCycleReports === 0;
+    return fp.users <= 1 && fp.products === 0 && fp.openComandas === 0 && fp.closedComandas === 0 && fp.history90 === 0 && fp.payables === 0 && fp.cashHtmlReports === 0 && fp.internalCashAudits === 0 && fp.financeCycleReports === 0;
   }
 
   function shouldForceRemotePreference(localCandidate, remoteCandidate) {
@@ -1049,6 +1057,11 @@
       preferLocal,
       allowRemoteOnly: allowRemoteOperationalInsert
     });
+    const mergedInternalCashAudits = mergeRowsByIdWithTimestamp(localState?.internalCashAudits, remoteState?.internalCashAudits, {
+      getTimestamp: (row) => row?.closedAt || row?.createdAt || "",
+      preferLocal,
+      allowRemoteOnly: allowRemoteOperationalInsert
+    });
     const mergedFinanceCycleReports = mergeRowsByIdWithTimestamp(localState?.financeCycleReports, remoteState?.financeCycleReports, {
       getTimestamp: (row) => row?.endAt || row?.generatedAt || "",
       preferLocal,
@@ -1073,6 +1086,7 @@
       cookHistory: mergedCookHistory,
       payables: mergedPayables,
       cashHtmlReports: mergedCashHtmlReports,
+      internalCashAudits: mergedInternalCashAudits,
       financeCycleReports: mergedFinanceCycleReports,
       auditLog: mergedAudit,
       meta: {
@@ -1122,6 +1136,7 @@
       openComandas: [],
       closedComandas: [],
       cashHtmlReports: [],
+      internalCashAudits: [],
       financeCycleReports: [],
       cookHistory: [],
       payables: [],
@@ -1216,6 +1231,62 @@
       })
       .sort((a, b) => new Date(b.closedAt || b.createdAt || 0) - new Date(a.closedAt || a.createdAt || 0));
     state.cashHtmlReports = normalized.slice(0, CASH_HTML_REPORTS_LIMIT);
+  }
+
+  function normalizeInternalCashAuditRecord(entry, fallbackId = 0) {
+    const parsed = entry && typeof entry === "object" ? entry : {};
+    const createdAt = normalizeIsoTimestamp(parsed.createdAt || parsed.closedAt || parsed.openedAt) || isoNow();
+    const closedAt = normalizeIsoTimestamp(parsed.closedAt || parsed.createdAt) || createdAt;
+    const openedAt = normalizeIsoTimestamp(parsed.openedAt) || "";
+    const checks = (Array.isArray(parsed.checks) ? parsed.checks : [])
+      .filter((row) => row && typeof row === "object")
+      .map((row, idx) => ({
+        code: String(row.code || `check_${fallbackId + 1}_${idx + 1}`),
+        ok: row.ok !== false,
+        detail: String(row.detail || "")
+      }));
+    const rawSummary = parsed.summary && typeof parsed.summary === "object" ? parsed.summary : {};
+    const byPayment = {};
+    for (const [method, amount] of Object.entries(rawSummary.byPayment || {})) {
+      byPayment[String(method || "").trim()] = Math.max(0, parseNumber(amount || 0));
+    }
+    return {
+      id: String(parsed.id || `ICA-${fallbackId + 1}`),
+      referenceDay: String(parsed.referenceDay || String(openedAt || closedAt || createdAt).slice(0, 10)).slice(0, 10),
+      createdAt,
+      cashClosureId: String(parsed.cashClosureId || ""),
+      cashId: String(parsed.cashId || ""),
+      openedAt,
+      closedAt,
+      actorId: parsed.actorId ?? null,
+      actorName: String(parsed.actorName || ""),
+      actorRole: String(parsed.actorRole || ""),
+      status: String(parsed.status || (checks.every((check) => check.ok) ? "ok" : "warning")),
+      fingerprint: String(parsed.fingerprint || ""),
+      reportHash: String(parsed.reportHash || ""),
+      checks,
+      summary: {
+        commandasCount: Math.max(0, Number(rawSummary.commandasCount || parsed.commandasCount || 0)),
+        uniqueComandas: Math.max(0, Number(rawSummary.uniqueComandas || 0)),
+        auditSnapshotCount: Math.max(0, Number(rawSummary.auditSnapshotCount || 0)),
+        htmlSize: Math.max(0, Number(rawSummary.htmlSize || 0)),
+        total: Math.max(0, parseNumber(rawSummary.total || parsed.total || 0)),
+        byPayment
+      }
+    };
+  }
+
+  function pruneInternalCashAudits(state) {
+    const threshold = Date.now() - HISTORY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    const normalized = (state.internalCashAudits || [])
+      .map((entry, idx) => normalizeInternalCashAuditRecord(entry, idx))
+      .filter((entry) => {
+        const referenceAt = new Date(entry.closedAt || entry.createdAt || 0).getTime();
+        if (!Number.isFinite(referenceAt)) return true;
+        return referenceAt >= threshold;
+      })
+      .sort((a, b) => new Date(b.closedAt || b.createdAt || 0) - new Date(a.closedAt || a.createdAt || 0));
+    state.internalCashAudits = normalized.slice(0, INTERNAL_CASH_AUDIT_LIMIT);
   }
 
   function normalizeFinanceCycleReportRecord(entry, fallbackId = 0) {
@@ -1713,6 +1784,9 @@
       cashHtmlReports: Array.isArray(parsed.cashHtmlReports)
         ? parsed.cashHtmlReports.map((entry, idx) => normalizeCashHtmlReportRecord(entry, idx))
         : [],
+      internalCashAudits: Array.isArray(parsed.internalCashAudits)
+        ? parsed.internalCashAudits.map((entry, idx) => normalizeInternalCashAuditRecord(entry, idx))
+        : [],
       financeCycleReports: Array.isArray(parsed.financeCycleReports)
         ? parsed.financeCycleReports.map((entry, idx) => normalizeFinanceCycleReportRecord(entry, idx))
         : [],
@@ -1770,6 +1844,7 @@
     pruneHistory(recovered);
     prunePayables(recovered);
     pruneCashHtmlReports(recovered);
+    pruneInternalCashAudits(recovered);
     pruneFinanceCycleReports(recovered);
     return recovered;
   }
@@ -1917,7 +1992,9 @@
     lastSyncError: "",
     lastKnownRemoteUpdatedAt: "",
     lastObservedRemoteUpdatedAt: "",
-    lastSyncedCloudFingerprint: ""
+    lastSyncedCloudFingerprint: "",
+    pendingStateChangeBroadcast: null,
+    prioritizeNextCloudSync: false
   };
 
   let stateVersion = 0;
@@ -1965,6 +2042,38 @@
     setSupabaseStatus("conectado");
   }
 
+  function queuePendingStateChangeBroadcast(options = {}) {
+    const actor = options.actor || getCurrentUser() || { id: 0, role: "system", name: "Sistema" };
+    supabaseCtx.pendingStateChangeBroadcast = {
+      actorId: actor?.id ?? null,
+      actorRole: String(actor?.role || "system"),
+      actorName: String(actor?.name || "Sistema"),
+      reason: String(options.reason || "").trim(),
+      localUpdatedAt: normalizeIsoTimestamp(options.localUpdatedAt || state.meta?.updatedAt) || isoNow()
+    };
+  }
+
+  function clearPendingStateChangeBroadcast() {
+    supabaseCtx.pendingStateChangeBroadcast = null;
+  }
+
+  function publishSupabaseStateChange(remoteUpdatedAtValue) {
+    const pending = supabaseCtx.pendingStateChangeBroadcast;
+    supabaseCtx.pendingStateChangeBroadcast = null;
+    if (!supabaseCtx.channel) return;
+    const payload = {
+      updatedAt: normalizeIsoTimestamp(remoteUpdatedAtValue) || isoNow(),
+      localUpdatedAt: pending?.localUpdatedAt || normalizeIsoTimestamp(state.meta?.updatedAt) || isoNow(),
+      actorId: pending?.actorId ?? null,
+      actorRole: pending?.actorRole || "",
+      actorName: pending?.actorName || "",
+      reason: pending?.reason || "",
+      sessionId: clientSessionId,
+      broadcastAt: isoNow()
+    };
+    supabaseCtx.channel.send({ type: "broadcast", event: "state_changed", payload }).catch(() => { });
+  }
+
   function adoptIncomingState(source) {
     if (!source || typeof source !== "object" || Array.isArray(source)) {
       return;
@@ -1994,6 +2103,7 @@
     pruneHistory(state);
     prunePayables(state);
     pruneCashHtmlReports(state);
+    pruneInternalCashAudits(state);
     pruneFinanceCycleReports(state);
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -2004,6 +2114,7 @@
         state.history90 = (state.history90 || []).slice(0, 30);
         state.cookHistory = (state.cookHistory || []).slice(0, 200);
         state.cashHtmlReports = (state.cashHtmlReports || []).slice(0, 30);
+        state.internalCashAudits = (state.internalCashAudits || []).slice(0, 30);
         state.financeCycleReports = (state.financeCycleReports || []).slice(0, 30);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       } catch (retryErr) {
@@ -2011,7 +2122,16 @@
       }
     }
     if (!options.skipCloud) {
-      scheduleSupabaseSync();
+      queuePendingStateChangeBroadcast({
+        actor: options.actor,
+        reason: options.reason,
+        localUpdatedAt: state.meta?.updatedAt
+      });
+      scheduleSupabaseSync({
+        immediate: options.cloudDelayMs === 0 || supabaseCtx.prioritizeNextCloudSync,
+        delayMs: options.cloudDelayMs
+      });
+      supabaseCtx.prioritizeNextCloudSync = false;
     }
   }
 
@@ -2043,15 +2163,17 @@
     return supabaseCtx.client;
   }
 
-  function scheduleSupabaseSync() {
+  function scheduleSupabaseSync(options = {}) {
     supabaseCtx.syncQueued = true;
     if (supabaseCtx.syncTimer) {
       clearTimeout(supabaseCtx.syncTimer);
     }
+    const requestedDelay = Number.isFinite(Number(options.delayMs)) ? Number(options.delayMs) : CLOUD_SYNC_DEBOUNCE_MS;
+    const delayMs = options.immediate ? 0 : Math.max(0, requestedDelay);
     supabaseCtx.syncTimer = setTimeout(() => {
       supabaseCtx.syncTimer = null;
       void syncStateToSupabase();
-    }, CLOUD_SYNC_DEBOUNCE_MS);
+    }, delayMs);
   }
 
   function clearSupabaseReconnectTimer() {
@@ -2087,6 +2209,7 @@
       supabaseCtx.lastSyncError = "";
       supabaseCtx.lastSyncErrorAt = null;
       setSupabaseStatus("conectado");
+      clearPendingStateChangeBroadcast();
       supabaseCtx.syncInFlight = false;
       return;
     }
@@ -2105,6 +2228,7 @@
         const optimisticUpdatedAtRemote = Array.isArray(optimisticRows) ? optimisticRows[0]?.updated_at : "";
         if (optimisticUpdatedAtRemote) {
           finalizeSuccessfulCloudSync(sanitized, optimisticUpdatedAtRemote);
+          publishSupabaseStateChange(optimisticUpdatedAtRemote);
           return;
         }
       }
@@ -2128,6 +2252,7 @@
       ensureCatalogBackup(mergedForCloud, "sync");
       if (remoteData?.payload && typeof remoteData.payload === "object" && areCloudStatesEquivalent(mergedForCloud, remoteData.payload)) {
         finalizeSuccessfulCloudSync(mergedForCloud, remoteData.updated_at);
+        clearPendingStateChangeBroadcast();
         return;
       }
 
@@ -2159,6 +2284,7 @@
         return;
       }
       finalizeSuccessfulCloudSync(payload.payload, writtenUpdatedAt || payload.updated_at);
+      publishSupabaseStateChange(writtenUpdatedAt || payload.updated_at);
     } catch (err) {
       supabaseCtx.syncQueued = true;
       supabaseCtx.syncRetryCount = Math.min(supabaseCtx.syncRetryCount + 1, 8);
@@ -2325,11 +2451,6 @@
       broadcastAt: isoNow()
     };
     supabaseCtx.channel.send({ type: "broadcast", event: "audit_event", payload }).catch(() => { });
-    supabaseCtx.channel.send({
-      type: "broadcast",
-      event: "state_changed",
-      payload: { updatedAt: state.meta?.updatedAt || isoNow(), actorName: entry.actorName }
-    }).catch(() => { });
   }
 
   function debouncedPullFromSupabase() {
@@ -2341,7 +2462,17 @@
     supabaseCtx.pullDebounceTimer = setTimeout(() => {
       supabaseCtx.pullDebounceTimer = null;
       void pullStateFromSupabase();
-    }, 500);
+    }, CLOUD_PULL_DEBOUNCE_MS);
+  }
+
+  function debouncedRemotePullFromSupabase() {
+    if (supabaseCtx.pullDebounceTimer) {
+      clearTimeout(supabaseCtx.pullDebounceTimer);
+    }
+    supabaseCtx.pullDebounceTimer = setTimeout(() => {
+      supabaseCtx.pullDebounceTimer = null;
+      void pullStateFromSupabase();
+    }, CLOUD_REMOTE_PULL_DEBOUNCE_MS);
   }
 
   async function connectSupabase() {
@@ -2383,8 +2514,9 @@
           render();
         }
       })
-      .on("broadcast", { event: "state_changed" }, () => {
-        debouncedPullFromSupabase();
+      .on("broadcast", { event: "state_changed" }, (message) => {
+        rememberObservedRemoteUpdatedAt(message?.payload?.updatedAt);
+        debouncedRemotePullFromSupabase();
       });
 
     channel.subscribe((status) => {
@@ -2574,6 +2706,7 @@
       itemId
     });
     appendAudit({ actor, type: normalized.type, detail: normalized.detail, comandaId: comanda.id, itemId, reason });
+    supabaseCtx.prioritizeNextCloudSync = true;
   }
 
   function comandaTotal(comanda) {
@@ -3887,6 +4020,107 @@
       commandas,
       summary: buildCashSummary(commandas)
     };
+  }
+
+  function buildInternalCashAuditRecord({ closure, actor, html, auditSnapshot }) {
+    const commandasRaw = Array.isArray(closure?.commandas) ? closure.commandas : [];
+    const commandas = dedupeComandasById(commandasRaw);
+    const expectedSummary = closure?.summary || buildCashSummary(commandas);
+    const recalculatedSummary = buildCashSummary(commandas);
+    const duplicateCount = Math.max(0, commandasRaw.length - commandas.length);
+    const windowMismatchCount = commandas.filter(
+      (comanda) => !comandaBelongsToCashWindow(comanda, closure?.openedAt, closure?.closedAt)
+    ).length;
+    const paymentKeys = [...new Set([
+      ...Object.keys(expectedSummary?.byPayment || {}),
+      ...Object.keys(recalculatedSummary?.byPayment || {})
+    ])];
+    const paymentMismatchCount = paymentKeys.filter(
+      (method) =>
+        Math.abs(
+          parseNumber(expectedSummary?.byPayment?.[method] || 0) - parseNumber(recalculatedSummary?.byPayment?.[method] || 0)
+        ) > 0.01
+    ).length;
+    const totalMismatch =
+      Math.abs(parseNumber(expectedSummary?.total || 0) - parseNumber(recalculatedSummary?.total || 0)) > 0.01;
+    const checks = [
+      {
+        code: "open_comandas",
+        ok: (Array.isArray(state.openComandas) ? state.openComandas.length : 0) === 0,
+        detail: `Comandas abertas no momento do fechamento: ${Array.isArray(state.openComandas) ? state.openComandas.length : 0}.`
+      },
+      {
+        code: "unique_commandas",
+        ok: duplicateCount === 0,
+        detail: duplicateCount ? `${duplicateCount} comandas duplicadas foram encontradas no lote.` : "Nenhuma comanda duplicada no lote."
+      },
+      {
+        code: "cash_window",
+        ok: windowMismatchCount === 0,
+        detail: windowMismatchCount ? `${windowMismatchCount} comandas ficaram fora da janela aberta/fechada do caixa.` : "Todas as comandas pertencem a janela do caixa."
+      },
+      {
+        code: "summary_total",
+        ok: !totalMismatch,
+        detail: totalMismatch
+          ? `Resumo do fechamento ${money(expectedSummary?.total || 0)} x recalculo ${money(recalculatedSummary.total)}.`
+          : `Total conferido em ${money(recalculatedSummary.total)}.`
+      },
+      {
+        code: "summary_payment",
+        ok: paymentMismatchCount === 0,
+        detail: paymentMismatchCount ? `Divergencias encontradas em ${paymentMismatchCount} forma(s) de pagamento.` : "Totais por pagamento conferidos."
+      },
+      {
+        code: "closure_report",
+        ok: String(html || "").trim().length > 0,
+        detail: `Relatorio HTML gerado com ${String(html || "").length} caracteres.`
+      },
+      {
+        code: "audit_snapshot",
+        ok: Array.isArray(auditSnapshot),
+        detail: `Snapshot interno com ${Array.isArray(auditSnapshot) ? auditSnapshot.length : 0} evento(s).`
+      }
+    ];
+    const fingerprintSource = {
+      cashId: closure?.cashId || "",
+      cashClosureId: closure?.id || "",
+      openedAt: closure?.openedAt || "",
+      closedAt: closure?.closedAt || "",
+      summary: recalculatedSummary,
+      commandas: commandas.map((comanda) => ({
+        id: comanda?.id || "",
+        createdAt: comanda?.createdAt || "",
+        closedAt: comanda?.closedAt || "",
+        status: comanda?.status || "",
+        total: comandaTotal(comanda)
+      })),
+      auditCount: Array.isArray(auditSnapshot) ? auditSnapshot.length : 0
+    };
+    return normalizeInternalCashAuditRecord({
+      id: `ICA-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      referenceDay: String(closure?.openedAt || closure?.closedAt || isoNow()).slice(0, 10),
+      createdAt: isoNow(),
+      cashClosureId: closure?.id || "",
+      cashId: closure?.cashId || "",
+      openedAt: closure?.openedAt || "",
+      closedAt: closure?.closedAt || "",
+      actorId: actor?.id ?? null,
+      actorName: actor?.name || "Sistema",
+      actorRole: actor?.role || "system",
+      status: checks.every((check) => check.ok) ? "ok" : "warning",
+      fingerprint: hashText(stableSerializeForHash(fingerprintSource)),
+      reportHash: hashText(String(html || "")),
+      checks,
+      summary: {
+        commandasCount: commandas.length,
+        uniqueComandas: commandas.length,
+        auditSnapshotCount: Array.isArray(auditSnapshot) ? auditSnapshot.length : 0,
+        htmlSize: String(html || "").length,
+        total: recalculatedSummary.total,
+        byPayment: recalculatedSummary.byPayment
+      }
+    });
   }
 
   function closureStatusLabel(status) {
@@ -9124,11 +9358,19 @@
     };
     const closureHtml = buildCashHistoryPrintHtml(closure, reportOptions);
     const archivedHtmlReport = createCashHtmlReportRecord(closure, actor, closureHtml, reportOptions);
+    const internalCashAudit = buildInternalCashAuditRecord({
+      closure,
+      actor,
+      html: closureHtml,
+      auditSnapshot: closure.auditLog
+    });
 
     state.history90.unshift(closure);
     pruneHistory(state);
     state.cashHtmlReports = [archivedHtmlReport, ...(state.cashHtmlReports || [])];
     pruneCashHtmlReports(state);
+    state.internalCashAudits = [internalCashAudit, ...(state.internalCashAudits || [])];
+    pruneInternalCashAudits(state);
 
     state.openComandas = [];
     state.closedComandas = [];
@@ -9143,7 +9385,11 @@
       date: todayISO()
     };
 
-    saveState();
+    saveState({
+      actor,
+      reason: "fechamento_caixa",
+      cloudDelayMs: 0
+    });
     openCashHtmlReportRecord(archivedHtmlReport, {
       previewTitle: reportOptions.title,
       previewSubtitle: `${reportOptions.subtitle} | Arquivo ${archivedHtmlReport.id}`
